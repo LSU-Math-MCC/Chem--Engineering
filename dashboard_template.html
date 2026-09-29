@@ -1,0 +1,993 @@
+<title>EPDM Reactor Run</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@600&display=swap">
+<style>
+/* Layout: sticky time bar on top, then readouts at the selected time,
+   then an inputs strip and a grid of synced time-series charts, then the full table. */
+:root {
+  --bg: #f4f5f2;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #7d7b75;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --ring: rgba(11, 11, 11, 0.10);
+  --accent: #2a78d6;
+  --accent-wash: rgba(42, 120, 214, 0.10);
+  --event: #8a877f;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --danger: #c4302f;
+  --good-ink: #006300;
+  --font-ui: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, "Segoe UI", sans-serif;
+  --text-xs: 0.75rem;
+  --text-sm: 0.8125rem;
+  --text-md: 0.9375rem;
+  --text-lg: 1.375rem;
+  --text-xl: 1.75rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0f0f0e;
+    --surface: #1a1a19;
+    --ink: #ffffff;
+    --ink-2: #c3c2b7;
+    --muted: #93918a;
+    --grid: #2c2c2a;
+    --axis: #45443f;
+    --ring: rgba(255, 255, 255, 0.10);
+    --accent: #3987e5;
+    --accent-wash: rgba(57, 135, 229, 0.16);
+    --event: #85837c;
+    --s1: #3987e5;
+    --s2: #d95926;
+    --s3: #199e70;
+  --danger: #ef6b6a;
+  --good-ink: #0ca30c;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0f0f0e;
+  --surface: #1a1a19;
+  --ink: #ffffff;
+  --ink-2: #c3c2b7;
+  --muted: #93918a;
+  --grid: #2c2c2a;
+  --axis: #45443f;
+  --ring: rgba(255, 255, 255, 0.10);
+  --accent: #3987e5;
+  --accent-wash: rgba(57, 135, 229, 0.16);
+  --event: #85837c;
+  --s1: #3987e5;
+  --s2: #d95926;
+  --s3: #199e70;
+  --danger: #ef6b6a;
+  --good-ink: #0ca30c;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  line-height: 1.45;
+}
+.wrap {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding-inline: 20px;
+  padding-block: 0 48px;
+  display: grid;
+  gap: 20px;
+}
+
+header.top {
+  padding-block: 24px 0;
+  display: grid;
+  gap: 4px;
+}
+h1 {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-size: var(--text-xl);
+  letter-spacing: 0.01em;
+  margin: 0;
+  text-wrap: balance;
+}
+.sub { color: var(--ink-2); font-size: var(--text-sm); margin: 0; }
+.sub b { font-weight: 500; color: var(--ink); }
+
+/* Time bar */
+.timebar {
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 5;
+  background: var(--bg);
+  border-bottom: 1px solid var(--grid);
+  padding-block: 12px;
+  display: grid;
+  gap: 10px;
+}
+.timebar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.btn {
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--axis);
+  border-radius: 6px;
+  padding: 6px 14px;
+  cursor: pointer;
+  min-width: 76px;
+}
+.btn:hover { border-color: var(--ink-2); }
+.btn:focus-visible, input[type="range"]:focus-visible, summary:focus-visible, .chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.readout {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-md);
+  min-width: 13ch;
+}
+.readout b { font-weight: 600; }
+.readout span { color: var(--muted); font-size: var(--text-sm); }
+#slider {
+  flex: 1 1 260px;
+  accent-color: var(--accent);
+  min-width: 0;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  font: inherit;
+  font-size: var(--text-xs);
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--grid);
+  border-radius: 999px;
+  padding: 3px 10px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.chip:hover { border-color: var(--axis); color: var(--ink); }
+.chip[aria-current="true"] { border-color: var(--accent); color: var(--ink); background: var(--accent-wash); }
+.chip-label { color: var(--muted); font-size: var(--text-xs); letter-spacing: 0.04em; text-transform: uppercase; }
+
+/* Readouts */
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1px;
+  background: var(--grid);
+  border: 1px solid var(--grid);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.tile {
+  background: var(--surface);
+  padding: 14px 16px;
+  display: grid;
+  gap: 2px;
+  align-content: start;
+}
+.tile-label { font-size: var(--text-sm); color: var(--ink-2); }
+.tile-value { font-size: var(--text-lg); font-weight: 600; }
+.tile-value small { font-size: var(--text-sm); font-weight: 400; color: var(--muted); margin-left: 4px; }
+.tile-delta { font-size: var(--text-xs); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* Charts */
+.section-label {
+  font-size: var(--text-xs);
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 8px 0 -8px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 460px), 1fr));
+  gap: 16px;
+}
+.card {
+  background: var(--surface);
+  border: 1px solid var(--ring);
+  border-radius: 8px;
+  padding: 14px 16px 8px;
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 16px; }
+.card h2 { font-size: var(--text-md); font-weight: 600; margin: 0; }
+.card h2 span { font-weight: 400; color: var(--muted); font-size: var(--text-sm); margin-left: 6px; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--text-xs); color: var(--ink-2); }
+.legend i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
+.note { font-size: var(--text-xs); color: var(--muted); margin: 0; }
+.plot { position: relative; width: 100%; }
+.plot svg { display: block; width: 100%; overflow: visible; }
+.plot text { font-family: var(--font-ui); font-variant-numeric: tabular-nums; }
+
+.tooltip {
+  position: fixed;
+  z-index: 20;
+  pointer-events: none;
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--ring);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  display: grid;
+  gap: 3px;
+  min-width: 150px;
+}
+.tooltip[hidden] { display: none; }
+.tooltip .tt-time { color: var(--muted); margin-bottom: 2px; font-variant-numeric: tabular-nums; }
+.tooltip .tt-row { display: flex; align-items: center; gap: 8px; }
+.tooltip .tt-row i { width: 12px; height: 2px; border-radius: 1px; flex: none; }
+.tooltip .tt-row b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.tooltip .tt-row span { color: var(--ink-2); }
+
+/* Full table */
+details.all {
+  background: var(--surface);
+  border: 1px solid var(--ring);
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+details.all summary { cursor: pointer; font-weight: 600; }
+details.all summary span { font-weight: 400; color: var(--muted); font-size: var(--text-sm); margin-left: 6px; }
+.groups {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 230px), 1fr));
+  gap: 16px 24px;
+}
+.groups table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+.groups caption { text-align: left; font-size: var(--text-xs); color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; padding-bottom: 4px; }
+.groups th { text-align: left; font-weight: 400; color: var(--ink-2); padding: 3px 8px 3px 0; border-top: 1px solid var(--grid); }
+.groups td { text-align: right; font-variant-numeric: tabular-nums; padding: 3px 0; border-top: 1px solid var(--grid); }
+
+.empty { padding: 48px 0; color: var(--ink-2); }
+.empty code { background: var(--surface); border: 1px solid var(--grid); border-radius: 4px; padding: 1px 6px; }
+
+/* Input editor (server mode) */
+.view { display: grid; gap: 20px; transition: opacity 0.2s; }
+.view.stale { opacity: 0.45; }
+.static-note { font-size: var(--text-sm); color: var(--ink-2); margin: 0; }
+.static-note code { background: var(--surface); border: 1px solid var(--grid); border-radius: 4px; padding: 1px 6px; font-size: 0.95em; }
+.editor > details { background: var(--surface); border: 1px solid var(--ring); border-radius: 8px; padding: 12px 16px 16px; }
+.editor > details > summary { cursor: pointer; font-weight: 600; font-size: var(--text-md); }
+.editor > details > summary span { font-weight: 400; color: var(--muted); font-size: var(--text-sm); margin-left: 8px; }
+.editor-form { display: grid; gap: 16px; margin-top: 14px; }
+.editor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: 16px 28px; align-items: start; }
+.editor-grid .col { display: grid; gap: 16px; min-width: 0; }
+.fs { border: 0; padding: 0; margin: 0; display: grid; gap: 8px; min-width: 0; }
+.fs legend { font-size: var(--text-xs); color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; padding: 0; margin-bottom: 6px; }
+.hint { font-size: var(--text-xs); color: var(--muted); margin: 0; }
+.fields { display: grid; gap: 8px 12px; }
+.fields.cols-2 { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.field { display: grid; gap: 3px; font-size: var(--text-xs); color: var(--ink-2); min-width: 0; }
+.field input, .field select {
+  font: inherit; font-size: var(--text-sm); color: var(--ink);
+  background: var(--bg); border: 1px solid var(--axis); border-radius: 5px;
+  padding: 5px 8px; width: 100%; min-width: 0; font-variant-numeric: tabular-nums;
+}
+.field input:focus-visible, .field select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+.field input[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
+.field.narrow { width: 7.5rem; }
+.field.grow { flex: 1 1 200px; }
+.events { display: grid; gap: 10px; }
+.event { border: 1px solid var(--grid); border-radius: 6px; padding: 10px; display: grid; gap: 8px; }
+.event-line { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: end; }
+.event .when { flex: 1 1 auto; padding-bottom: 7px; }
+.btn-primary { background: var(--accent); border-color: var(--accent); color: #ffffff; }
+.btn-primary:hover { border-color: var(--ink); }
+.btn-primary:disabled { opacity: 0.7; cursor: progress; }
+.btn-quiet { background: transparent; border-color: transparent; color: var(--ink-2); min-width: 0; padding-inline: 8px; }
+.btn-quiet:hover { border-color: var(--grid); color: var(--ink); }
+#add-event { justify-self: start; }
+.params > summary { cursor: pointer; font-size: var(--text-sm); font-weight: 500; }
+.param-groups { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px 28px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; border-top: 1px solid var(--grid); padding-top: 14px; }
+.link { color: var(--accent); font-size: var(--text-sm); }
+.run-status { margin: 0; font-size: var(--text-sm); color: var(--ink-2); flex: 1 1 260px; }
+.run-status[data-kind="error"] { color: var(--danger); }
+.run-status[data-kind="error"]::before { content: "\2715\00a0\00a0"; font-weight: 600; }
+.run-status[data-kind="ok"]::before { content: "\2713\00a0\00a0"; color: var(--good-ink); font-weight: 600; }
+.run-status[data-kind="pending"]::before { content: "\25CF\00a0\00a0"; color: var(--accent); }
+
+@media (max-width: 520px) {
+  .wrap { padding-inline: 16px; }
+  .readout { min-width: 0; }
+}
+</style>
+
+<div class="wrap" id="app">
+  <header class="top">
+    <h1>EPDM Reactor Run</h1>
+    <p class="sub" id="sub">Cozewith '88 CSTR, isothermal</p>
+  </header>
+  <section class="editor" id="editor" aria-label="Simulation inputs" hidden></section>
+  <p class="static-note" id="static-note" hidden>This page shows a saved run. To change the inputs and rerun the model, start <code>python dashboard_server.py</code> and open the address it prints.</p>
+  <div class="view" id="view"></div>
+</div>
+<div class="tooltip" id="tooltip" hidden></div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const tooltip = document.getElementById("tooltip");
+let teardown = null;
+
+function mount(DATA, keepTime) {
+  const app = document.getElementById("view");
+  if (teardown) teardown();
+  app.replaceChildren();
+  tooltip.hidden = true;
+
+  if (!DATA || !DATA.columns) {
+    app.append(h("p", { class: "empty" }, [
+      "No simulation data in this page. Run ",
+      h("code", {}, ["python model.py"]), " and then ",
+      h("code", {}, ["python dashboard.py"]), " to build it.",
+    ]));
+    return;
+  }
+
+  const cols = DATA.columns;
+  const t = cols.t;
+  const N = t.length - 1;
+
+  // ---------------------------------------------------------------- names
+  const SPECIES = {
+    C_M1: "Ethylene", C_M2: "Propylene", C_M3: "Diene",
+    C_C1: "Inactive catalyst", C_C2: "Active catalyst",
+    C_H2: "Hydrogen", C_Al: "Aluminum alkyl",
+  };
+  const SHORT = { C_M1: "Ethylene", C_M2: "Propylene", C_M3: "Diene", C_C1: "Catalyst", C_C2: "Active cat.", C_H2: "H₂", C_Al: "Al alkyl" };
+  const inputKeys = Object.keys(cols).filter(k => k === "F" || k.startsWith("feed_"));
+  const inputName = k => k === "F" ? "Outlet flow F" : (SPECIES[k.slice(5)] || k.slice(5)) + " feed";
+  const inputShort = k => k === "F" ? "F" : (SHORT[k.slice(5)] || k.slice(5)) + " feed";
+
+  // ---------------------------------------------------------------- events: steps where u(k) changes
+  const events = [];
+  for (let k = 1; k <= N; k++) {
+    const changes = [];
+    for (const key of inputKeys) {
+      const a = cols[key][k - 1], b = cols[key][k];
+      if (a !== b) changes.push({ key, a, b });
+    }
+    if (changes.length) events.push({ k, changes });
+  }
+  // Parameter step changes live only in the run config, not in the CSV.
+  for (const e of (DATA.config && DATA.config.events) || []) {
+    if (!String(e.target).startsWith("p.")) continue;
+    const key = e.target.slice(2);
+    const mark = (k, text) => {
+      if (k < 1 || k > N) return;
+      let ev = events.find(x => x.k === k);
+      if (!ev) { ev = { k, changes: [] }; events.push(ev); }
+      ev.changes.push({ text });
+    };
+    mark(e.start, key + (e.mode === "multiply" ? " ×" + e.value : " = " + e.value));
+    if (e.end !== null && e.end !== undefined && e.end + 1 <= N) mark(e.end + 1, key + " back");
+  }
+  events.sort((a, b) => a.k - b.k);
+  const ratioText = c => {
+    if (!c.a) return "→ " + fmt(c.b);
+    const r = c.b / c.a;
+    return "×" + (Math.abs(r - Math.round(r)) < 1e-9 ? String(Math.round(r)) : r.toPrecision(3).replace(/0+$/, "").replace(/\.$/, ""));
+  };
+  const eventText = e => e.changes.map(c => c.text || (inputShort(c.key) + " " + ratioText(c))).join(", ");
+
+  // ---------------------------------------------------------------- formatting
+  function fmt(v, digits = 4) {
+    if (v === null || v === undefined || !isFinite(v)) return "–";
+    const a = Math.abs(v);
+    if (a === 0) return "0";
+    if (a >= 1e6) return (v / 1e6).toFixed(2) + "M";
+    if (a >= 1e4) return (v / 1e3).toFixed(1) + "K";
+    if (a >= 1e-3) return trimNum(v.toPrecision(digits));
+    return v.toExponential(2).replace("e-", "e−");
+  }
+  function trimNum(s) { return s.includes("e") ? s : (s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s); }
+  function fmtTime(v) { return trimNum(Number(v).toPrecision(6)) + " s"; }
+
+  // ---------------------------------------------------------------- series helpers
+  const col = key => k => cols[key][k];
+  const pct = key => k => (cols[key][k] === null ? null : 100 * cols[key][k]);
+  const indexed = key => {
+    const base = cols[key][0];
+    return k => (base ? 100 * cols[key][k] / base : null);
+  };
+
+  const changingInputs = inputKeys.filter(key => cols[key].some(v => v !== cols[key][0]));
+  const COLORS = ["var(--s1)", "var(--s2)", "var(--s3)"];
+
+  const CHARTS = [
+    { id: "mw", title: "Molecular weight", unit: "g/mol", zero: true,
+      series: [["Mn", "Mn, number average", col("Mn")], ["Mw", "Mw, weight average", col("Mw")]] },
+    { id: "pdi", title: "Dispersity", unit: "PDI = Mw / Mn", zero: false,
+      series: [["PDI", "PDI", col("PDI")]] },
+    { id: "comp", title: "Polymer composition", unit: "wt %", zero: true,
+      series: [["e", "Ethylene", col("wt_ethylene")], ["p", "Propylene", col("wt_propylene")], ["d", "Diene", col("wt_diene")]] },
+    { id: "conv", title: "Monomer conversion", unit: "%", zero: true,
+      note: "Feed that does not leave in the outlet. During a transient this includes monomer accumulating in the reactor.",
+      series: [["e", "Ethylene", pct("conv_M1")], ["p", "Propylene", pct("conv_M2")], ["d", "Diene", pct("conv_M3")]] },
+    { id: "poly", title: "Polymer concentration", unit: "g/L", zero: true,
+      series: [["poly", "Polymer", col("polymer_conc")]] },
+    { id: "chains", title: "Polymer chains", unit: "mol/L", zero: true,
+      series: [["live", "Live chains", col("live_chains")], ["dead", "Dead chains", col("dead_chains")]] },
+  ];
+  const INPUT_CHART = changingInputs.length ? {
+    id: "inputs", title: "Inputs u(k)", unit: "% of starting value", zero: false, h: 150, step: true,
+    series: changingInputs.slice(0, 3).map(key => [key, inputName(key), indexed(key)]),
+  } : null;
+
+  // ---------------------------------------------------------------- state
+  let sel = keepTime === undefined ? N : Math.min(keepTime, N);
+  let playing = null;
+
+  // ---------------------------------------------------------------- header + time bar
+  const dt = N > 0 ? t[1] - t[0] : 0;
+  const sub = document.getElementById("sub");
+  sub.replaceChildren(
+    "Cozewith '88 CSTR, isothermal · ",
+    h("b", {}, [String(N)]), " steps of ", h("b", {}, [fmtTime(dt)]),
+    " · ", h("b", {}, [fmtTime(t[N])]), " total · from ", DATA.source
+  );
+
+  const playBtn = h("button", { class: "btn", id: "play", type: "button" }, ["Play"]);
+  const slider = h("input", { id: "slider", type: "range", min: "0", max: String(N), step: "1", value: String(sel), "aria-label": "Time step" });
+  const readout = h("div", { class: "readout", "aria-live": "polite" });
+  const chips = h("div", { class: "chips" });
+
+  const chipEls = [];
+  const addChip = (k, text) => {
+    const c = h("button", { class: "chip", type: "button" }, [text]);
+    c.addEventListener("click", () => { stop(); select(k); });
+    chipEls.push([k, c]);
+    chips.append(c);
+  };
+  addChip(0, "Start, t = 0 s");
+  for (const e of events) addChip(e.k, "t = " + fmtTime(t[e.k]) + ": " + eventText(e));
+  addChip(N, "End, t = " + fmtTime(t[N]));
+
+  const timebar = h("div", { class: "timebar" }, [
+    h("div", { class: "timebar-row" }, [playBtn, readout, slider]),
+    h("div", { class: "timebar-row" }, [h("span", { class: "chip-label" }, ["Jump to"]), chips]),
+  ]);
+  app.append(timebar);
+
+  slider.addEventListener("input", () => { stop(); select(Number(slider.value)); });
+  playBtn.addEventListener("click", () => (playing ? stop() : play()));
+
+  function play() {
+    if (sel >= N) select(0);
+    playBtn.textContent = "Pause";
+    playing = setInterval(() => {
+      if (sel >= N) { stop(); return; }
+      select(sel + 1);
+    }, 70);
+  }
+  function stop() {
+    if (playing) clearInterval(playing);
+    playing = null;
+    playBtn.textContent = "Play";
+  }
+
+  // ---------------------------------------------------------------- tiles
+  const TILES = [
+    ["Mn", "Number-average MW", "g/mol", col("Mn")],
+    ["Mw", "Weight-average MW", "g/mol", col("Mw")],
+    ["PDI", "Dispersity (PDI)", "", col("PDI")],
+    ["wt_ethylene", "Ethylene in polymer", "wt %", col("wt_ethylene")],
+    ["conv_M1", "Ethylene conversion", "%", pct("conv_M1")],
+    ["polymer_conc", "Polymer concentration", "g/L", col("polymer_conc")],
+  ];
+  const tiles = h("div", { class: "tiles" });
+  const tileEls = TILES.map(([key, label, unit]) => {
+    const value = h("div", { class: "tile-value" });
+    const delta = h("div", { class: "tile-delta" });
+    tiles.append(h("div", { class: "tile" }, [h("div", { class: "tile-label" }, [label]), value, delta]));
+    return { value, delta, unit };
+  });
+  app.append(tiles);
+
+  // ---------------------------------------------------------------- chart cards
+  const cards = [];
+  function makeCard(cfg) {
+    const legend = h("div", { class: "legend" });
+    if (cfg.series.length > 1) {
+      cfg.series.forEach(([, label], i) => legend.append(h("span", {}, [h("i", { style: "background:" + COLORS[i] }), label])));
+    }
+    const plot = h("div", { class: "plot" });
+    const card = h("section", { class: "card", "aria-label": cfg.title }, [
+      h("div", { class: "card-head" }, [h("h2", {}, [cfg.title, h("span", {}, [cfg.unit])]), legend]),
+      plot,
+    ]);
+    if (cfg.note) card.append(h("p", { class: "note" }, [cfg.note]));
+    const entry = { cfg, plot };
+    cards.push(entry);
+    return card;
+  }
+  if (INPUT_CHART) {
+    app.append(h("div", { class: "section-label" }, ["What changed"]));
+    app.append(makeCard(INPUT_CHART));
+  }
+  app.append(h("div", { class: "section-label" }, ["Polymer properties over time"]));
+  const grid = h("div", { class: "grid" });
+  CHARTS.forEach(cfg => grid.append(makeCard(cfg)));
+  app.append(grid);
+
+  // ---------------------------------------------------------------- full table
+  const GROUPS = [
+    ["Inputs u(k)", inputKeys.map(k => [k, inputName(k)])],
+    ["Species, mol/L", Object.keys(SPECIES).filter(k => k in cols).map(k => [k, SPECIES[k]])],
+    ["Zeroth moments", ["P0", "Q0", "R0", "B0"].map(k => [k, k])],
+    ["First moments", ["P100", "P010", "P001", "Q100", "Q010", "Q001", "R100", "R010", "R001", "B100", "B010", "B001"].map(k => [k, k])],
+    ["Second moments", ["L200", "L020", "L002", "L110", "L101", "L011", "B200", "B020", "B002", "B110", "B101", "B011"].map(k => [k, k])],
+    ["Properties", [["Mn", "Mn, g/mol"], ["Mw", "Mw, g/mol"], ["PDI", "PDI"], ["polymer_conc", "Polymer, g/L"],
+      ["wt_ethylene", "Ethylene, wt %"], ["wt_propylene", "Propylene, wt %"], ["wt_diene", "Diene, wt %"],
+      ["conv_M1", "Ethylene conversion"], ["conv_M2", "Propylene conversion"], ["conv_M3", "Diene conversion"],
+      ["live_chains", "Live chains, mol/L"], ["dead_chains", "Dead chains, mol/L"]]],
+  ];
+  const tableCells = [];
+  const tableTitle = h("span", {});
+  const groups = h("div", { class: "groups" });
+  for (const [caption, rows] of GROUPS) {
+    const present = rows.filter(([k]) => k in cols);
+    if (!present.length) continue;
+    const tbody = h("tbody");
+    for (const [key, label] of present) {
+      const td = h("td");
+      tableCells.push([key, td]);
+      tbody.append(h("tr", {}, [h("th", { scope: "row" }, [label]), td]));
+    }
+    groups.append(h("table", {}, [h("caption", {}, [caption]), tbody]));
+  }
+  app.append(h("details", { class: "all" }, [h("summary", {}, ["Every value at this time", tableTitle]), groups]));
+
+  // ---------------------------------------------------------------- selection
+  function select(k) {
+    sel = Math.max(0, Math.min(N, k));
+    slider.value = String(sel);
+    readout.replaceChildren(h("b", {}, ["t = " + fmtTime(t[sel])]), " ", h("span", {}, ["step " + sel + " of " + N]));
+    for (const [ck, c] of chipEls) c.setAttribute("aria-current", ck === sel ? "true" : "false");
+
+    TILES.forEach(([key, , , get], i) => {
+      const v = get(sel);
+      const el = tileEls[i];
+      el.value.replaceChildren(fmt(v, key === "PDI" ? 3 : 4), ...(el.unit ? [h("small", {}, [el.unit])] : []));
+      const prev = sel > 0 ? get(sel - 1) : null;
+      if (v === null || prev === null || prev === 0) el.delta.textContent = sel === 0 ? "Before any polymer forms" : " ";
+      else {
+        const d = 100 * (v - prev) / Math.abs(prev);
+        el.delta.textContent = Math.abs(d) < 0.005 ? "Steady over the last step" : (d > 0 ? "+" : "−") + Math.abs(d).toFixed(2) + "% over the last step";
+      }
+    });
+
+    tableTitle.textContent = "t = " + fmtTime(t[sel]);
+    for (const [key, td] of tableCells) {
+      const v = cols[key][sel];
+      td.textContent = key.startsWith("conv_") && v !== null ? fmt(100 * v, 3) + " %" : fmt(v);
+    }
+    drawAll();
+  }
+
+  // ---------------------------------------------------------------- drawing
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function s(tag, attrs = {}, text) {
+    const el = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  function niceTicks(lo, hi, count = 4) {
+    if (lo === hi) { const pad = Math.abs(lo) * 0.05 || 1; lo -= pad; hi += pad; }
+    const raw = (hi - lo) / count;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(st => st >= raw);
+    const start = Math.floor(lo / step) * step;
+    const end = Math.ceil(hi / step) * step;
+    const ticks = [];
+    for (let v = start; v <= end + step * 1e-9; v += step) ticks.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+    return { ticks, lo: start, hi: end, step };
+  }
+  function tickLabel(v, step) {
+    if (v === 0) return "0";
+    const a = Math.abs(step);
+    if (a >= 1000) return trimNum((v / 1000).toPrecision(4)) + "K";
+    if (a >= 1) return trimNum(v.toFixed(a >= 10 ? 0 : 1));
+    if (a >= 0.001) return trimNum(v.toFixed(Math.ceil(-Math.log10(a)) + 1));
+    const [mant, exp] = v.toExponential(1).split("e");
+    return trimNum(mant) + "e" + exp.replace("-", "−").replace("+", "");
+  }
+
+  function drawChart(entry) {
+    const { cfg, plot } = entry;
+    const W = Math.max(280, plot.clientWidth);
+    const H = cfg.h || 210;
+    const m = { l: 50, r: 72, t: 20, b: 26 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+
+    const values = [];
+    cfg.series.forEach(([, , get]) => { for (let k = 0; k <= N; k++) { const v = get(k); if (v !== null && isFinite(v)) values.push(v); } });
+    if (!values.length) { plot.replaceChildren(h("p", { class: "note" }, ["No values yet."])); return; }
+    let lo = Math.min(...values), hi = Math.max(...values);
+    if (cfg.zero) lo = Math.min(0, lo);
+    if (!cfg.zero && hi - lo < Math.abs(hi) * 0.02) { const pad = Math.abs(hi) * 0.01 || 1; lo -= pad; hi += pad; }
+    const yt = niceTicks(lo, hi, cfg.h ? 3 : 4);
+    const xt = niceTicks(t[0], t[N], Math.max(3, Math.min(8, Math.floor(iw / 90))));
+
+    const x = v => m.l + (v - t[0]) / (t[N] - t[0] || 1) * iw;
+    const y = v => m.t + ih - (v - yt.lo) / (yt.hi - yt.lo) * ih;
+
+    const svg = s("svg", { viewBox: `0 0 ${W} ${H}`, height: H, role: "img", "aria-label": cfg.title + " over time" });
+
+    for (const v of yt.ticks) {
+      svg.append(s("line", { x1: m.l, x2: m.l + iw, y1: y(v), y2: y(v), stroke: "var(--grid)", "stroke-width": 1 }));
+      svg.append(s("text", { x: m.l - 8, y: y(v) + 4, "text-anchor": "end", "font-size": 11, fill: "var(--muted)" }, tickLabel(v, yt.step)));
+    }
+    svg.append(s("line", { x1: m.l, x2: m.l + iw, y1: m.t + ih, y2: m.t + ih, stroke: "var(--axis)", "stroke-width": 1 }));
+    for (const v of xt.ticks) {
+      if (v < t[0] - 1e-9 || v > t[N] + 1e-9) continue;
+      svg.append(s("text", { x: x(v), y: H - 6, "text-anchor": "middle", "font-size": 11, fill: "var(--muted)" }, tickLabel(v, xt.step)));
+    }
+    svg.append(s("text", { x: m.l + iw + 24, y: H - 6, "font-size": 11, fill: "var(--muted)" }, "t, s"));
+
+    // Input changes
+    for (const e of events) {
+      const ex = x(t[e.k]);
+      svg.append(s("line", { x1: ex, x2: ex, y1: m.t - 4, y2: m.t + ih, stroke: "var(--event)", "stroke-width": 1, opacity: 0.7 }));
+      svg.append(s("text", { x: ex + 4, y: m.t - 8, "font-size": 10.5, fill: "var(--ink-2)" }, eventText(e)));
+    }
+
+    // Lines
+    cfg.series.forEach(([, , get], i) => {
+      let d = "", pen = false;
+      for (let k = 0; k <= N; k++) {
+        const v = get(k);
+        if (v === null || !isFinite(v)) { pen = false; continue; }
+        if (pen && cfg.step) d += "H" + x(t[k]).toFixed(1);
+        d += (pen ? "L" : "M") + x(t[k]).toFixed(1) + " " + y(v).toFixed(1);
+        pen = true;
+      }
+      svg.append(s("path", { d, fill: "none", stroke: COLORS[i], "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+    });
+
+    // End labels (dropped when they would collide; legend + tooltip still carry them)
+    const ends = cfg.series.map(([, label, get], i) => ({ i, label, v: get(N) })).filter(o => o.v !== null && isFinite(o.v))
+      .map(o => ({ ...o, py: y(o.v) })).sort((a, b) => a.py - b.py);
+    let lastY = -Infinity;
+    for (const o of ends) {
+      if (o.py - lastY < 13) continue;
+      lastY = o.py;
+      svg.append(s("text", { x: m.l + iw + 8, y: o.py + 4, "font-size": 11, fill: "var(--ink-2)" }, fmt(o.v, 3)));
+    }
+
+    // Selected time
+    const sx = x(t[sel]);
+    svg.append(s("line", { x1: sx, x2: sx, y1: m.t, y2: m.t + ih, stroke: "var(--ink)", "stroke-width": 1.5 }));
+    cfg.series.forEach(([, , get], i) => {
+      const v = get(sel);
+      if (v === null || !isFinite(v)) return;
+      svg.append(s("circle", { cx: sx, cy: y(v), r: 4.5, fill: COLORS[i], stroke: "var(--surface)", "stroke-width": 2 }));
+    });
+
+    // Hover layer
+    const hover = s("line", { x1: 0, x2: 0, y1: m.t, y2: m.t + ih, stroke: "var(--muted)", "stroke-width": 1, visibility: "hidden" });
+    svg.append(hover);
+    const hit = s("rect", { x: m.l, y: 0, width: iw, height: H, fill: "transparent", style: "cursor: crosshair" });
+    svg.append(hit);
+
+    const nearest = evt => {
+      const r = svg.getBoundingClientRect();
+      const px = (evt.clientX - r.left) * (W / r.width);
+      const tv = t[0] + (px - m.l) / iw * (t[N] - t[0]);
+      let best = 0;
+      for (let k = 1; k <= N; k++) if (Math.abs(t[k] - tv) < Math.abs(t[best] - tv)) best = k;
+      return best;
+    };
+    hit.addEventListener("pointermove", evt => {
+      const k = nearest(evt);
+      hover.setAttribute("x1", x(t[k])); hover.setAttribute("x2", x(t[k]));
+      hover.setAttribute("visibility", "visible");
+      showTooltip(evt, cfg, k);
+    });
+    hit.addEventListener("pointerleave", () => { hover.setAttribute("visibility", "hidden"); tooltip.hidden = true; });
+    hit.addEventListener("click", evt => { stop(); select(nearest(evt)); });
+
+    plot.replaceChildren(svg);
+  }
+
+  function showTooltip(evt, cfg, k) {
+    const rows = [h("div", { class: "tt-time" }, ["t = " + fmtTime(t[k]) + " · step " + k])];
+    cfg.series.forEach(([, label, get], i) => {
+      rows.push(h("div", { class: "tt-row" }, [h("i", { style: "background:" + COLORS[i] }), h("b", {}, [fmt(get(k), 4)]), h("span", {}, [label])]));
+    });
+    rows.push(h("div", { class: "tt-time" }, ["Click to select this time"]));
+    tooltip.replaceChildren(...rows);
+    tooltip.hidden = false;
+    const pad = 14, tw = tooltip.offsetWidth, th = tooltip.offsetHeight;
+    let left = evt.clientX + pad, top = evt.clientY + pad;
+    if (left + tw > window.innerWidth - 8) left = evt.clientX - tw - pad;
+    if (top + th > window.innerHeight - 8) top = evt.clientY - th - pad;
+    tooltip.style.left = Math.max(8, left) + "px";
+    tooltip.style.top = Math.max(8, top) + "px";
+  }
+
+  function drawAll() { cards.forEach(drawChart); }
+
+  let resizeTimer = null;
+  const ro = new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawAll, 60); });
+  ro.observe(app);
+  teardown = () => { stop(); ro.disconnect(); clearTimeout(resizeTimer); };
+
+  select(sel);
+  return () => sel;
+}
+
+function h(tag, attrs = {}, children = []) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  for (const c of children) el.append(c);
+  return el;
+}
+
+// ------------------------------------------------------------------ input editor (server mode only)
+function initEditor(DATA) {
+  const root = document.getElementById("editor");
+  root.hidden = false;
+
+  const FEEDS = [
+    ["C_M1", "Ethylene"], ["C_M2", "Propylene"], ["C_M3", "Diene"],
+    ["C_C1", "Catalyst (inactive)"], ["C_H2", "Hydrogen"], ["C_Al", "Aluminum alkyl"],
+  ];
+  const PARAM_GROUPS = [
+    ["Initiation and propagation", ["k_i1", "k_i2", "k11", "k12", "k13", "k21", "k22", "k31"]],
+    ["Catalyst activation and deactivation", ["k_a", "k_x", "k_x2", "k_x3"]],
+    ["Termination and chain transfer", ["k_t", "k_t2", "k_t3", "k_tr", "k_tr1", "k_trM2"]],
+  ];
+  const TARGETS = [["F", "Outlet flow F"]]
+    .concat(FEEDS.map(([k, n]) => ["feed." + k, n + " feed"]))
+    .concat([["p.V", "Volume V"]])
+    .concat(PARAM_GROUPS.flatMap(([, keys]) => keys.map(k => ["p." + k, "Rate constant " + k])));
+
+  let lastRun = "";
+  let busy = false;
+
+  const field = (id, label, value, opts = {}) => {
+    const input = h("input", { id, type: "text", inputmode: "decimal", autocomplete: "off", spellcheck: "false" });
+    input.value = value === null || value === undefined ? "" : String(value);
+    if (opts.placeholder) input.setAttribute("placeholder", opts.placeholder);
+    return h("label", { class: "field" + (opts.cls ? " " + opts.cls : ""), for: id }, [h("span", {}, [label]), input]);
+  };
+  const val = id => document.getElementById(id).value.trim();
+  const num = id => {
+    const el = document.getElementById(id);
+    const raw = el.value.trim();
+    const v = raw === "" ? NaN : Number(raw);
+    el.setAttribute("aria-invalid", Number.isFinite(v) ? "false" : "true");
+    return v;
+  };
+
+  const form = h("form", { class: "editor-form", novalidate: "" });
+  const summary = h("summary", {}, ["Simulation inputs", h("span", {}, ["Edit values and run the model again"])]);
+  const details = h("details", { open: "" }, [summary, form]);
+  root.replaceChildren(details);
+
+  const status = h("p", { class: "run-status", role: "status", "aria-live": "polite" });
+  const runBtn = h("button", { class: "btn btn-primary", type: "submit", id: "run-btn" }, ["Run simulation"]);
+  const resetBtn = h("button", { class: "btn", type: "button", id: "reset-btn" }, ["Reset to defaults"]);
+  const csvLink = h("a", { class: "link", href: "/results.csv", id: "csv-link" }, ["Download results.csv"]);
+
+  function build(cfg) {
+    const totalNote = h("p", { class: "hint", id: "total-note" });
+    const runLength = h("fieldset", { class: "fs" }, [
+      h("legend", {}, ["Run length"]),
+      h("div", { class: "fields cols-2" }, [
+        field("in-N", "Steps N", cfg.N),
+        field("in-dt", "Step size Δt, s", cfg.dt),
+      ]),
+      totalNote,
+    ]);
+
+    const base = h("fieldset", { class: "fs" }, [
+      h("legend", {}, ["Starting inputs u(0)"]),
+      h("p", { class: "hint" }, ["Feed values are molar feed rates m_f. They hold for the whole run unless a step change overrides them."]),
+      h("div", { class: "fields cols-2" }, [field("in-F", "Outlet flow F", cfg.u0.F)]
+        .concat(FEEDS.map(([k, n]) => field("in-feed-" + k, n + " feed", cfg.u0.feed[k] ?? 0)))),
+    ]);
+
+    const rows = h("div", { class: "events", id: "events" });
+    const addBtn = h("button", { class: "btn", type: "button", id: "add-event" }, ["Add step change"]);
+    const steps = h("fieldset", { class: "fs" }, [
+      h("legend", {}, ["Step changes"]),
+      h("p", { class: "hint" }, ["Each change applies from its start step through its end step. Leave the end step blank to keep it until the run ends."]),
+      rows, addBtn,
+    ]);
+    let nextId = 0;
+    function eventRow(e) {
+      const id = "ev" + (nextId++);
+      const target = h("select", { id: id + "-target" });
+      for (const [v, label] of TARGETS) target.append(h("option", { value: v }, [label]));
+      target.value = e.target;
+      const mode = h("select", { id: id + "-mode" }, [
+        h("option", { value: "multiply" }, ["multiply by"]),
+        h("option", { value: "set" }, ["set to"]),
+      ]);
+      mode.value = e.mode || "multiply";
+      const remove = h("button", { class: "btn btn-quiet", type: "button", "aria-label": "Remove this step change" }, ["Remove"]);
+      const when = h("span", { class: "hint when" });
+      const row = h("div", { class: "event", "data-id": id }, [
+        h("div", { class: "event-line" }, [
+          h("label", { class: "field grow", for: id + "-target" }, [h("span", {}, ["Input"]), target]),
+          h("label", { class: "field", for: id + "-mode" }, [h("span", {}, ["Change"]), mode]),
+          field(id + "-value", "Value", e.value, { cls: "narrow" }),
+        ]),
+        h("div", { class: "event-line" }, [
+          field(id + "-start", "From step", e.start, { cls: "narrow" }),
+          field(id + "-end", "Through step", e.end, { cls: "narrow", placeholder: "end" }),
+          when, remove,
+        ]),
+      ]);
+      remove.addEventListener("click", () => { row.remove(); refresh(); });
+      rows.append(row);
+    }
+    (cfg.events || []).forEach(eventRow);
+    addBtn.addEventListener("click", () => {
+      eventRow({ target: "feed.C_M1", mode: "multiply", value: 1.2, start: Math.floor((Number(val("in-N")) || 100) / 2), end: null });
+      refresh();
+      rows.lastElementChild.querySelector("select").focus();
+    });
+
+    const params = h("details", { class: "params" }, [
+      h("summary", {}, ["Reactor and rate constants p"]),
+      h("div", { class: "param-groups" }, [
+        h("fieldset", { class: "fs" }, [
+          h("legend", {}, ["Reactor and molecular weights"]),
+          h("div", { class: "fields cols-2" }, [
+            field("in-p-V", "Volume V", cfg.p0.V),
+            field("in-mw-M1", "Ethylene, g/mol", cfg.p0.Mw.M1),
+            field("in-mw-M2", "Propylene, g/mol", cfg.p0.Mw.M2),
+            field("in-mw-M3", "Diene, g/mol", cfg.p0.Mw.M3),
+          ]),
+        ]),
+      ].concat(PARAM_GROUPS.map(([title, keys]) => h("fieldset", { class: "fs" }, [
+        h("legend", {}, [title]),
+        h("div", { class: "fields cols-2" }, keys.map(k => field("in-p-" + k, k, cfg.p0[k]))),
+      ])))),
+    ]);
+
+    const actions = h("div", { class: "actions" }, [runBtn, resetBtn, csvLink, status]);
+    form.replaceChildren(
+      h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base]), h("div", { class: "col" }, [steps])]),
+      params, actions,
+    );
+    refresh();
+  }
+
+  function readForm() {
+    const cfg = {
+      N: num("in-N"), dt: num("in-dt"),
+      u0: { F: num("in-F"), feed: {} },
+      p0: { V: num("in-p-V"), Mw: { M1: num("in-mw-M1"), M2: num("in-mw-M2"), M3: num("in-mw-M3") } },
+      events: [],
+    };
+    for (const [k] of FEEDS) cfg.u0.feed[k] = num("in-feed-" + k);
+    for (const [, keys] of PARAM_GROUPS) for (const k of keys) cfg.p0[k] = num("in-p-" + k);
+    for (const row of document.querySelectorAll("#events .event")) {
+      const id = row.dataset.id;
+      const endRaw = val(id + "-end");
+      cfg.events.push({
+        start: num(id + "-start"),
+        end: endRaw === "" ? null : num(id + "-end"),
+        target: val(id + "-target"), mode: val(id + "-mode"),
+        value: num(id + "-value"),
+      });
+    }
+    return cfg;
+  }
+
+  // Snapshot of the form for "has anything changed" checks, without flagging fields.
+  function snapshot() {
+    const cfg = readForm();
+    document.querySelectorAll("#editor [aria-invalid]").forEach(el => el.removeAttribute("aria-invalid"));
+    return JSON.stringify(cfg);
+  }
+
+  function refresh() {
+    const n = Number(val("in-N")), dt = Number(val("in-dt"));
+    document.getElementById("total-note").textContent = n > 0 && dt > 0
+      ? "Simulates " + (n * dt).toLocaleString() + " s in total."
+      : "Enter a step count and a step size above zero.";
+    for (const row of document.querySelectorAll("#events .event")) {
+      const id = row.dataset.id;
+      const s = Number(val(id + "-start")), eRaw = val(id + "-end");
+      const e = eRaw === "" ? null : Number(eRaw);
+      const when = row.querySelector(".when");
+      if (!Number.isFinite(s) || !(dt > 0)) { when.textContent = ""; continue; }
+      when.textContent = "t = " + (s * dt).toLocaleString() + " s" +
+        (e === null ? " to the end" : Number.isFinite(e) ? " to " + ((e + 1) * dt).toLocaleString() + " s" : "");
+    }
+    if (!busy) {
+      const dirty = snapshot() !== lastRun;
+      setStatus(dirty ? "Inputs changed. Run the simulation to update the charts." : "The charts show these inputs.", dirty ? "pending" : "ok");
+    }
+  }
+
+  function setStatus(text, kind) {
+    status.textContent = text;
+    status.dataset.kind = kind;
+  }
+
+  async function run() {
+    if (busy) return;
+    const cfg = readForm();
+    const bad = document.querySelector("#editor [aria-invalid='true']");
+    if (bad) {
+      setStatus("A field is empty or not a number. Fix the highlighted field and run again.", "error");
+      bad.focus();
+      return;
+    }
+    busy = true;
+    runBtn.disabled = true;
+    runBtn.textContent = "Running…";
+    setStatus("Running " + cfg.N + " steps. This takes a few seconds.", "pending");
+    const view = document.getElementById("view");
+    view.classList.add("stale");
+    let message = null;
+    try {
+      const res = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(cfg) });
+      const out = await res.json().catch(() => ({ error: "The server sent a response the page could not read." }));
+      if (!res.ok) {
+        message = ["The run did not start. " + (out.error || "Unknown error.") + " The charts still show the previous run.", "error"];
+      } else {
+        DATA.columns = out.columns;
+        DATA.config = out.config;
+        currentTime = mount(DATA, currentTime());
+        lastRun = snapshot();
+        message = ["Done in " + out.seconds.toFixed(1) + " s. results.csv and results_config.json are updated.", "ok"];
+      }
+    } catch (err) {
+      message = ["Could not reach the server. Check that python dashboard_server.py is still running, then try again.", "error"];
+    } finally {
+      busy = false;
+      runBtn.disabled = false;
+      runBtn.textContent = "Run simulation";
+      view.classList.remove("stale");
+    }
+    setStatus(message[0], message[1]);
+  }
+
+  form.addEventListener("submit", evt => { evt.preventDefault(); run(); });
+  form.addEventListener("input", refresh);
+  form.addEventListener("change", refresh);
+  resetBtn.addEventListener("click", () => build(JSON.parse(JSON.stringify(DATA.defaults))));
+
+  build(DATA.config);
+  lastRun = snapshot();
+  refresh();
+}
+
+let currentTime = mount(DATA);
+if (DATA && DATA.editable) initEditor(DATA);
+else document.getElementById("static-note").hidden = false;
+</script>
