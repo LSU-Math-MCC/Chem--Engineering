@@ -334,3 +334,35 @@ if __name__ == "__main__":
                      method="LSODA", dense_output=True)
     print("success:", sol.success)
     print(dict(zip(STATE_VARS, sol.y[:, -1])))
+
+#Dan's addition?
+def run_simulation():
+    time = 0
+    while time < 4:
+        if __name__ == "__main__":
+            from scipy.integrate import solve_ivp
+
+            p = dict(
+                F=1.0, V=3000.0,
+                k_i1=1e-2, k_i2=1e-2,
+                k11=1e-2, k12=1e-2, k13=1e-2,
+                k21=1e-2, k22=1e-2,
+                k31=1e-2,
+                k_a=1e-2, k_x=1e-3, k_x2=1e-3, k_x3=1e-3,
+                k_t=1e-2, k_t2=1e-3, k_t3=1e-3,
+                k_tr=1e-3, k_tr1=1e-3, k_trM2=1e-3,
+            )
+
+            y0 = {name: 0.0 for name in STATE_VARS}
+            y0.update(pack(dict(zip(STATE_VARS, sol.y))))
+
+            feed = zero_feed()
+            feed.update(C_M1=2.0, C_M2=1.0, C_M3=0.05, C_C1=1e-3, C_H2=1e-3, C_Al=1e-2)
+
+            sol = solve_ivp(derivatives, [0, 1], pack(y0), args=(p, feed),
+                            method="LSODA", dense_output=True)
+            print("success:", sol.success)
+            print(dict(zip(STATE_VARS, sol.y)))
+        return(dict(zip(STATE_VARS, sol.y)))
+    time += 1
+run_simulation()
