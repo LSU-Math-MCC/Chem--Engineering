@@ -302,6 +302,11 @@ details.all summary span { font-weight: 400; color: var(--muted); font-size: var
 .btn-quiet { background: transparent; border-color: transparent; color: var(--ink-2); min-width: 0; padding-inline: 8px; }
 .btn-quiet:hover { border-color: var(--grid); color: var(--ink); }
 #add-event { justify-self: start; }
+.csv-pick { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: end; flex: 1 1 260px; }
+.csv-pick[hidden], .field[hidden] { display: none; }
+.csv-info { font-size: var(--text-xs); color: var(--ink-2); padding-bottom: 7px; }
+.csv-info[data-kind="error"] { color: var(--danger); }
+.btn[aria-invalid="true"] { border-color: var(--danger); box-shadow: 0 0 0 1px var(--danger); }
 .params > summary { cursor: pointer; font-size: var(--text-sm); font-weight: 500; }
 .param-groups { margin-top: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 16px 28px; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; border-top: 1px solid var(--grid); padding-top: 14px; }
@@ -321,7 +326,7 @@ details.all summary span { font-weight: 400; color: var(--muted); font-size: var
 <div class="wrap" id="app">
   <header class="top">
     <h1>EPDM Reactor Run</h1>
-    <p class="sub" id="sub">Cozewith '88 CSTR, isothermal</p>
+    <p class="sub" id="sub">Cozewith '88 CSTR with energy balance</p>
   </header>
   <section class="editor" id="editor" aria-label="Simulation inputs" hidden></section>
   <p class="static-note" id="static-note" hidden>This page shows a saved run. To change the inputs and rerun the model, start <code>python dashboard_server.py</code> and open the address it prints.</p>
@@ -359,36 +364,51 @@ function mount(DATA, keepTime) {
     C_C1: "Inactive catalyst", C_C2: "Active catalyst",
     C_H2: "Hydrogen", C_Al: "Aluminum alkyl",
   };
-  const SHORT = { C_M1: "Ethylene", C_M2: "Propylene", C_M3: "Diene", C_C1: "Catalyst", C_C2: "Active cat.", C_H2: "H₂", C_Al: "Al alkyl" };
-  const inputKeys = Object.keys(cols).filter(k => k === "F" || k.startsWith("feed_"));
-  const inputName = k => k === "F" ? "Outlet flow F" : (SPECIES[k.slice(5)] || k.slice(5)) + " feed";
-  const inputShort = k => k === "F" ? "F" : (SHORT[k.slice(5)] || k.slice(5)) + " feed";
+  const STREAM_NAMES = { M1: "Ethylene", M2: "Propylene", M3: "Diene", C6: "Hexane (solvent)", cat: "Catalyst", Al: "Aluminum alkyl", H2: "Hydrogen" };
+  const STREAM_SHORT = { M1: "Ethylene", M2: "Propylene", M3: "Diene", C6: "Hexane", cat: "Catalyst", Al: "Al alkyl", H2: "H₂" };
+  // Inputs u(k): the stream mass flows and the inlet temperature (F follows from them).
+  const inputKeys = Object.keys(cols).filter(k => k === "T_i" || k.startsWith("flow_"));
+  const inputName = k => k === "T_i" ? "Inlet temperature, °F" : (STREAM_NAMES[k.slice(5)] || k.slice(5)) + " feed, lb/hr";
+  const inputShort = k => k === "T_i" ? "Inlet T" : (STREAM_SHORT[k.slice(5)] || k.slice(5)) + " feed";
 
   // ---------------------------------------------------------------- events: steps where u(k) changes
   const events = [];
+  const configEvents = (DATA.config && DATA.config.events) || [];
+  const columnOf = target => target === "T_i" ? "T_i" : "flow_" + target.slice(5);
+  // Inputs following CSV data change every step: label only where they start.
+  const covered = new Set();
+  for (const e of configEvents) {
+    if (!e.values || String(e.target).startsWith("p.")) continue;
+    const last = e.end === null || e.end === undefined ? N : Math.min(e.end, N);
+    for (let k = e.start + 1; k <= last; k++) covered.add(columnOf(e.target) + "@" + k);
+  }
   for (let k = 1; k <= N; k++) {
     const changes = [];
     for (const key of inputKeys) {
       const a = cols[key][k - 1], b = cols[key][k];
-      if (a !== b) changes.push({ key, a, b });
+      if (a !== b && !covered.has(key + "@" + k)) changes.push({ key, a, b });
     }
     if (changes.length) events.push({ k, changes });
   }
-  // Parameter step changes live only in the run config, not in the CSV.
-  for (const e of (DATA.config && DATA.config.events) || []) {
-    if (!String(e.target).startsWith("p.")) continue;
-    const key = e.target.slice(2);
-    const mark = (k, text) => {
-      if (k < 1 || k > N) return;
-      let ev = events.find(x => x.k === k);
-      if (!ev) { ev = { k, changes: [] }; events.push(ev); }
-      ev.changes.push({ text });
-    };
-    mark(e.start, key + (e.mode === "multiply" ? " ×" + e.value : " = " + e.value));
-    if (e.end !== null && e.end !== undefined && e.end + 1 <= N) mark(e.end + 1, key + " back");
+  const mark = (k, text) => {
+    if (k < 1 || k > N) return;
+    let ev = events.find(x => x.k === k);
+    if (!ev) { ev = { k, changes: [] }; events.push(ev); }
+    const i = ev.changes.findIndex(c => c.key && text.startsWith(inputShort(c.key)));
+    if (i >= 0) ev.changes.splice(i, 1);
+    ev.changes.push({ text });
+  };
+  for (const e of configEvents) {
+    const isParam = String(e.target).startsWith("p.");
+    const name = isParam ? e.target.slice(2) : inputShort(columnOf(e.target));
+    if (e.values) mark(e.start, name + (e.mode === "multiply" ? " × " : " from ") + e.source);
+    // Parameter step changes live only in the run config, not in the CSV.
+    else if (isParam) mark(e.start, name + (e.mode === "multiply" ? " ×" + e.value : " = " + e.value));
+    if (isParam && e.end !== null && e.end !== undefined && e.end + 1 <= N) mark(e.end + 1, name + " back");
   }
   events.sort((a, b) => a.k - b.k);
   const ratioText = c => {
+    if (c.key === "T_i") return "→ " + fmt(c.b) + " °F";
     if (!c.a) return "→ " + fmt(c.b);
     const r = c.b / c.a;
     return "×" + (Math.abs(r - Math.round(r)) < 1e-9 ? String(Math.round(r)) : r.toPrecision(3).replace(/0+$/, "").replace(/\.$/, ""));
@@ -416,10 +436,15 @@ function mount(DATA, keepTime) {
     return k => (base ? 100 * cols[key][k] / base : null);
   };
 
-  const changingInputs = inputKeys.filter(key => cols[key].some(v => v !== cols[key][0]));
+  // The inlet temperature is drawn on the temperature chart, not as % of start.
+  const changingInputs = inputKeys.filter(key => key !== "T_i" && cols[key].some(v => v !== cols[key][0]));
   const COLORS = ["var(--s1)", "var(--s2)", "var(--s3)"];
 
   const CHARTS = [
+    { id: "temp", title: "Temperature", unit: "°F", zero: false,
+      series: [["T", "Reactor", col("T")], ["Ti", "Inlet", col("T_i")]] },
+    { id: "pr", title: "Polymerization rate", unit: "lb/hr", zero: true,
+      series: [["PR", "Polymer made", col("PR")]] },
     { id: "mw", title: "Molecular weight", unit: "g/mol", zero: true,
       series: [["Mn", "Mn, number average", col("Mn")], ["Mw", "Mw, weight average", col("Mw")]] },
     { id: "pdi", title: "Dispersity", unit: "PDI = Mw / Mn", zero: false,
@@ -429,8 +454,8 @@ function mount(DATA, keepTime) {
     { id: "conv", title: "Monomer conversion", unit: "%", zero: true,
       note: "Feed that does not leave in the outlet. During a transient this includes monomer accumulating in the reactor.",
       series: [["e", "Ethylene", pct("conv_M1")], ["p", "Propylene", pct("conv_M2")], ["d", "Diene", pct("conv_M3")]] },
-    { id: "poly", title: "Polymer concentration", unit: "g/L", zero: true,
-      series: [["poly", "Polymer", col("polymer_conc")]] },
+    { id: "ml", title: "Mooney viscosity", unit: "ML = (a + b·PD) · Mw", zero: true,
+      series: [["ML", "ML", col("ML")]] },
     { id: "chains", title: "Polymer chains", unit: "mol/L", zero: true,
       series: [["live", "Live chains", col("live_chains")], ["dead", "Dead chains", col("dead_chains")]] },
   ];
@@ -447,7 +472,7 @@ function mount(DATA, keepTime) {
   const dt = N > 0 ? t[1] - t[0] : 0;
   const sub = document.getElementById("sub");
   sub.replaceChildren(
-    "Cozewith '88 CSTR, isothermal · ",
+    "Cozewith '88 CSTR with energy balance · ",
     h("b", {}, [String(N)]), " steps of ", h("b", {}, [fmtTime(dt)]),
     " · ", h("b", {}, [fmtTime(t[N])]), " total · from ", DATA.source
   );
@@ -493,12 +518,14 @@ function mount(DATA, keepTime) {
 
   // ---------------------------------------------------------------- tiles
   const TILES = [
+    ["T", "Reactor temperature", "°F", col("T")],
+    ["PR", "Polymerization rate", "lb/hr", col("PR")],
     ["Mn", "Number-average MW", "g/mol", col("Mn")],
     ["Mw", "Weight-average MW", "g/mol", col("Mw")],
     ["PDI", "Dispersity (PDI)", "", col("PDI")],
+    ["ML", "Mooney viscosity ML", "", col("ML")],
     ["wt_ethylene", "Ethylene in polymer", "wt %", col("wt_ethylene")],
     ["conv_M1", "Ethylene conversion", "%", pct("conv_M1")],
-    ["polymer_conc", "Polymer concentration", "g/L", col("polymer_conc")],
   ];
   const tiles = h("div", { class: "tiles" });
   const tileEls = TILES.map(([key, label, unit]) => {
@@ -537,13 +564,16 @@ function mount(DATA, keepTime) {
 
   // ---------------------------------------------------------------- full table
   const GROUPS = [
-    ["Inputs u(k)", inputKeys.map(k => [k, inputName(k)])],
+    ["Inputs u(k)", inputKeys.map(k => [k, inputName(k)]).concat([["F", "Outlet flow F = Σ flows / ρ(T_i), ft³/hr"]])],
+    ["Reactor", [["T", "Temperature, °F"]]],
     ["Species, mol/L", Object.keys(SPECIES).filter(k => k in cols).map(k => [k, SPECIES[k]])],
     ["Zeroth moments", ["P0", "Q0", "R0", "B0"].map(k => [k, k])],
     ["First moments", ["P100", "P010", "P001", "Q100", "Q010", "Q001", "R100", "R010", "R001", "B100", "B010", "B001"].map(k => [k, k])],
     ["Second moments", ["L200", "L020", "L002", "L110", "L101", "L011", "B200", "B020", "B002", "B110", "B101", "B011"].map(k => [k, k])],
-    ["Properties", [["Mn", "Mn, g/mol"], ["Mw", "Mw, g/mol"], ["PDI", "PDI"], ["polymer_conc", "Polymer, g/L"],
+    ["Properties", [["Mn", "Mn, g/mol"], ["Mw", "Mw, g/mol"], ["PDI", "PDI"], ["ML", "Mooney viscosity ML"],
+      ["PR", "Polymerization rate, lb/hr"], ["polymer_conc", "Polymer, g/L"],
       ["wt_ethylene", "Ethylene, wt %"], ["wt_propylene", "Propylene, wt %"], ["wt_diene", "Diene, wt %"],
+      ["X_M1", "X_M1, ethylene of C2+C3, wt %"], ["X_M3", "X_M3, diene, wt %"],
       ["conv_M1", "Ethylene conversion"], ["conv_M2", "Propylene conversion"], ["conv_M3", "Diene conversion"],
       ["live_chains", "Live chains, mol/L"], ["dead_chains", "Dead chains, mol/L"]]],
   ];
@@ -575,7 +605,11 @@ function mount(DATA, keepTime) {
       const el = tileEls[i];
       el.value.replaceChildren(fmt(v, key === "PDI" ? 3 : 4), ...(el.unit ? [h("small", {}, [el.unit])] : []));
       const prev = sel > 0 ? get(sel - 1) : null;
-      if (v === null || prev === null || prev === 0) el.delta.textContent = sel === 0 ? "Before any polymer forms" : " ";
+      if (key === "T" && v !== null && prev !== null) {
+        const d = v - prev;
+        el.delta.textContent = Math.abs(d) < 0.05 ? "Steady over the last step" : (d > 0 ? "+" : "−") + Math.abs(d).toFixed(1) + " °F over the last step";
+      } else if (key === "T") el.delta.textContent = "Starting temperature";
+      else if (v === null || prev === null || prev === 0) el.delta.textContent = sel === 0 ? "Before any polymer forms" : " ";
       else {
         const d = 100 * (v - prev) / Math.abs(prev);
         el.delta.textContent = Math.abs(d) < 0.005 ? "Steady over the last step" : (d > 0 ? "+" : "−") + Math.abs(d).toFixed(2) + "% over the last step";
@@ -756,19 +790,20 @@ function initEditor(DATA) {
   const root = document.getElementById("editor");
   root.hidden = false;
 
-  const FEEDS = [
-    ["C_M1", "Ethylene"], ["C_M2", "Propylene"], ["C_M3", "Diene"],
-    ["C_C1", "Catalyst (inactive)"], ["C_H2", "Hydrogen"], ["C_Al", "Aluminum alkyl"],
+  const STREAMS = [
+    ["M1", "Ethylene"], ["M2", "Propylene"], ["M3", "Diene"], ["C6", "Hexane (solvent)"],
+    ["cat", "Catalyst (VCl₄)"], ["Al", "Aluminum alkyl"], ["H2", "Hydrogen"],
   ];
   const PARAM_GROUPS = [
     ["Initiation and propagation", ["k_i1", "k_i2", "k11", "k12", "k13", "k21", "k22", "k31"]],
     ["Catalyst activation and deactivation", ["k_a", "k_x", "k_x2", "k_x3"]],
     ["Termination and chain transfer", ["k_t", "k_t2", "k_t3", "k_tr", "k_tr1", "k_trM2"]],
   ];
-  const TARGETS = [["F", "Outlet flow F"]]
-    .concat(FEEDS.map(([k, n]) => ["feed." + k, n + " feed"]))
-    .concat([["p.V", "Volume V"]])
+  const TARGETS = STREAMS.map(([k, n]) => ["flow." + k, n + " feed, lb/hr"])
+    .concat([["T_i", "Inlet temperature, °F"], ["p.V", "Volume V, ft³"], ["p.H_mix", "Heat of mixing ΔH_mix, Btu/hr"]])
     .concat(PARAM_GROUPS.flatMap(([, keys]) => keys.map(k => ["p." + k, "Rate constant " + k])));
+  // Stream density ρ(T), lb/ft³, T in °F (same correlation as derivatives.stream_density).
+  const density = T => 3.804 / Math.pow(0.2641, 1 + Math.pow(1 - (T + 459.67) / 913.68, 0.27537));
 
   let lastRun = "";
   let busy = false;
@@ -788,6 +823,45 @@ function initEditor(DATA) {
     return v;
   };
 
+  // ---------------------------------------------------------------- step-change amounts from a CSV file
+  // CSV data per step-change row id: { file, columns: {name: numbers}, column, values, source }.
+  const csvData = new Map();
+
+  // Numeric columns of a CSV text, in file order. A first row with any non-number is the header.
+  function csvColumns(text) {
+    const rows = text.replace(/^﻿/, "").split(/\r?\n/)
+      .filter(l => l.trim() !== "" && !l.trim().startsWith("#"))
+      .map(l => l.split(",").map(c => c.trim().replace(/^"(.*)"$/, "$1").trim()));
+    if (!rows.length) throw new Error("The file is empty.");
+    const isNum = c => c !== "" && Number.isFinite(Number(c));
+    const hasHeader = rows[0].some(c => c !== "" && !isNum(c));
+    const width = Math.max(...rows.map(r => r.length));
+    const names = Array.from({ length: width }, (_, i) => (hasHeader && rows[0][i]) || "Column " + (i + 1));
+    const body = hasHeader ? rows.slice(1) : rows;
+    const columns = {};
+    names.forEach((name, i) => {
+      const cells = body.map(r => r[i] ?? "").filter(c => c !== "");
+      if (cells.length && cells.every(isNum)) columns[name] = cells.map(Number);
+    });
+    if (!Object.keys(columns).length) throw new Error("No column holds only numbers.");
+    return columns;
+  }
+  // Column matching the step change's input, else the first one that is not a time/step index.
+  function defaultColumn(columns, target) {
+    const names = Object.keys(columns);
+    const key = target.replace(/^(flow|p)\./, "");
+    const wanted = [target, key, "flow_" + key].map(s => s.toLowerCase());
+    return names.find(n => wanted.includes(n.toLowerCase()))
+      || names.find(n => !["step", "k", "t", "time"].includes(n.toLowerCase())) || names[0];
+  }
+  function csvSummary(d) {
+    if (!d || !d.values) return "";
+    const lo = Math.min(...d.values), hi = Math.max(...d.values);
+    const range = lo === hi ? fmtNum(lo) : fmtNum(lo) + " to " + fmtNum(hi);
+    return d.values.length + " value" + (d.values.length === 1 ? "" : "s") + ", " + range;
+  }
+  const fmtNum = v => Number(v.toPrecision(4)).toString();
+
   const form = h("form", { class: "editor-form", novalidate: "" });
   const summary = h("summary", {}, ["Simulation inputs", h("span", {}, ["Edit values and run the model again"])]);
   const details = h("details", { open: "" }, [summary, form]);
@@ -799,6 +873,7 @@ function initEditor(DATA) {
   const csvLink = h("a", { class: "link", href: "/results.csv", id: "csv-link" }, ["Download results.csv"]);
 
   function build(cfg) {
+    csvData.clear();
     const totalNote = h("p", { class: "hint", id: "total-note" });
     const runLength = h("fieldset", { class: "fs" }, [
       h("legend", {}, ["Run length"]),
@@ -811,16 +886,18 @@ function initEditor(DATA) {
 
     const base = h("fieldset", { class: "fs" }, [
       h("legend", {}, ["Starting inputs u(0)"]),
-      h("p", { class: "hint" }, ["Feed values are molar feed rates m_f. They hold for the whole run unless a step change overrides them."]),
-      h("div", { class: "fields cols-2" }, [field("in-F", "Outlet flow F", cfg.u0.F)]
-        .concat(FEEDS.map(([k, n]) => field("in-feed-" + k, n + " feed", cfg.u0.feed[k] ?? 0)))),
+      h("p", { class: "hint" }, ["Mass feed flows in lb/hr. They hold for the whole run unless a step change overrides them."]),
+      h("div", { class: "fields cols-2" }, STREAMS.map(([k, n]) => field("in-flow-" + k, n + ", lb/hr", cfg.u0.flows[k] ?? 0))
+        .concat([field("in-T_i", "Inlet temperature T_i, °F", cfg.u0.T_i)])),
+      h("p", { class: "hint", id: "flow-note" }),
     ]);
 
     const rows = h("div", { class: "events", id: "events" });
     const addBtn = h("button", { class: "btn", type: "button", id: "add-event" }, ["Add step change"]);
     const steps = h("fieldset", { class: "fs" }, [
       h("legend", {}, ["Step changes"]),
-      h("p", { class: "hint" }, ["Each change applies from its start step through its end step. Leave the end step blank to keep it until the run ends."]),
+      h("p", { class: "hint" }, ["Each change applies from its start step through its end step. Leave the end step blank to keep it until the run ends. ",
+        "With the amount from a CSV file, row 1 of the chosen column is used at the start step, row 2 at the next step, and so on; the last row is held if the data runs out."]),
       rows, addBtn,
     ]);
     let nextId = 0;
@@ -834,40 +911,118 @@ function initEditor(DATA) {
         h("option", { value: "set" }, ["set to"]),
       ]);
       mode.value = e.mode || "multiply";
+      const source = h("select", { id: id + "-source" }, [
+        h("option", { value: "value" }, ["a typed value"]),
+        h("option", { value: "csv" }, ["a CSV file"]),
+      ]);
+      source.value = e.values ? "csv" : "value";
+      const valueField = field(id + "-value", "Value", e.value ?? 1, { cls: "narrow" });
+
+      // CSV picker: file button, column choice, summary of the data in use.
+      const fileInput = h("input", { type: "file", accept: ".csv,text/csv,text/plain", hidden: "" });
+      const fileBtn = h("button", { class: "btn", type: "button", id: id + "-file" }, ["Choose CSV…"]);
+      const column = h("select", { id: id + "-column" });
+      const columnField = h("label", { class: "field", for: id + "-column" }, [h("span", {}, ["Column"]), column]);
+      const info = h("span", { class: "csv-info", id: id + "-info" });
+      const csvPick = h("div", { class: "event-line csv-pick" }, [fileBtn, fileInput, columnField, info]);
+      if (e.values) csvData.set(id, { file: null, columns: null, column: null, values: e.values, source: e.source || "CSV" });
+
+      const showCsv = () => {
+        const d = csvData.get(id);
+        const csv = source.value === "csv";
+        valueField.hidden = csv;
+        csvPick.hidden = !csv;
+        columnField.hidden = !(d && d.columns);
+        fileBtn.textContent = d ? "Change file…" : "Choose CSV…";
+        info.dataset.kind = "";
+        info.textContent = d ? d.source + ": " + csvSummary(d) : "No file chosen yet.";
+      };
+      const useColumn = name => {
+        const d = csvData.get(id);
+        d.column = name;
+        d.values = d.columns[name];
+        d.source = d.file + ": " + name;
+        showCsv();
+        refresh();
+      };
+      fileBtn.addEventListener("click", () => fileInput.click());
+      fileInput.addEventListener("change", async () => {
+        const file = fileInput.files[0];
+        fileInput.value = "";
+        if (!file) return;
+        try {
+          const columns = csvColumns(await file.text());
+          const negative = Object.entries(columns).filter(([, v]) => v.some(x => x < 0)).map(([n]) => n);
+          for (const n of negative) delete columns[n];
+          if (!Object.keys(columns).length) throw new Error("Every numeric column has negative values; step-change amounts must be zero or more.");
+          column.replaceChildren(...Object.entries(columns).map(([n, v]) =>
+            h("option", { value: n }, [n + " (" + v.length + ")"])));
+          csvData.set(id, { file: file.name, columns });
+          column.value = defaultColumn(columns, target.value);
+          useColumn(column.value);
+        } catch (err) {
+          showCsv();
+          info.dataset.kind = "error";
+          info.textContent = file.name + ": " + err.message;
+        }
+      });
+      column.addEventListener("change", () => useColumn(column.value));
+      source.addEventListener("change", showCsv);
+
       const remove = h("button", { class: "btn btn-quiet", type: "button", "aria-label": "Remove this step change" }, ["Remove"]);
       const when = h("span", { class: "hint when" });
       const row = h("div", { class: "event", "data-id": id }, [
         h("div", { class: "event-line" }, [
           h("label", { class: "field grow", for: id + "-target" }, [h("span", {}, ["Input"]), target]),
           h("label", { class: "field", for: id + "-mode" }, [h("span", {}, ["Change"]), mode]),
-          field(id + "-value", "Value", e.value, { cls: "narrow" }),
+          h("label", { class: "field", for: id + "-source" }, [h("span", {}, ["Amount from"]), source]),
+          valueField,
         ]),
+        csvPick,
         h("div", { class: "event-line" }, [
           field(id + "-start", "From step", e.start, { cls: "narrow" }),
           field(id + "-end", "Through step", e.end, { cls: "narrow", placeholder: "end" }),
           when, remove,
         ]),
       ]);
-      remove.addEventListener("click", () => { row.remove(); refresh(); });
+      remove.addEventListener("click", () => { row.remove(); csvData.delete(id); refresh(); });
       rows.append(row);
+      showCsv();
     }
     (cfg.events || []).forEach(eventRow);
     addBtn.addEventListener("click", () => {
-      eventRow({ target: "feed.C_M1", mode: "multiply", value: 1.2, start: Math.floor((Number(val("in-N")) || 100) / 2), end: null });
+      eventRow({ target: "flow.M1", mode: "multiply", value: 1.2, start: Math.floor((Number(val("in-N")) || 100) / 2), end: null });
       refresh();
       rows.lastElementChild.querySelector("select").focus();
     });
 
     const params = h("details", { class: "params" }, [
-      h("summary", {}, ["Reactor and rate constants p"]),
+      h("summary", {}, ["Reactor, energy balance and rate constants p"]),
       h("div", { class: "param-groups" }, [
         h("fieldset", { class: "fs" }, [
           h("legend", {}, ["Reactor and molecular weights"]),
           h("div", { class: "fields cols-2" }, [
-            field("in-p-V", "Volume V", cfg.p0.V),
+            field("in-p-V", "Volume V, ft³", cfg.p0.V),
+            field("in-p-T0", "Starting reactor T, °F", cfg.p0.T0),
             field("in-mw-M1", "Ethylene, g/mol", cfg.p0.Mw.M1),
             field("in-mw-M2", "Propylene, g/mol", cfg.p0.Mw.M2),
             field("in-mw-M3", "Diene, g/mol", cfg.p0.Mw.M3),
+          ]),
+        ]),
+        h("fieldset", { class: "fs" }, [
+          h("legend", {}, ["Energy balance"]),
+          h("div", { class: "fields cols-2" }, [
+            field("in-dh-M1", "−ΔH ethylene, Btu/lb", cfg.p0.neg_dH.M1),
+            field("in-dh-M2", "−ΔH propylene, Btu/lb", cfg.p0.neg_dH.M2),
+            field("in-dh-M3", "−ΔH diene, Btu/lb", cfg.p0.neg_dH.M3),
+            field("in-p-H_mix", "ΔH_mix, Btu/hr", cfg.p0.H_mix),
+          ]),
+        ]),
+        h("fieldset", { class: "fs" }, [
+          h("legend", {}, ["Mooney viscosity ML = (a + b·PD)·Mw"]),
+          h("div", { class: "fields cols-2" }, [
+            field("in-p-ML_a", "a", cfg.p0.ML_a),
+            field("in-p-ML_b", "b", cfg.p0.ML_b),
           ]),
         ]),
       ].concat(PARAM_GROUPS.map(([title, keys]) => h("fieldset", { class: "fs" }, [
@@ -887,21 +1042,34 @@ function initEditor(DATA) {
   function readForm() {
     const cfg = {
       N: num("in-N"), dt: num("in-dt"),
-      u0: { F: num("in-F"), feed: {} },
-      p0: { V: num("in-p-V"), Mw: { M1: num("in-mw-M1"), M2: num("in-mw-M2"), M3: num("in-mw-M3") } },
+      u0: { flows: {}, T_i: num("in-T_i") },
+      p0: {
+        V: num("in-p-V"), T0: num("in-p-T0"),
+        Mw: { M1: num("in-mw-M1"), M2: num("in-mw-M2"), M3: num("in-mw-M3") },
+        neg_dH: { M1: num("in-dh-M1"), M2: num("in-dh-M2"), M3: num("in-dh-M3") },
+        H_mix: num("in-p-H_mix"), ML_a: num("in-p-ML_a"), ML_b: num("in-p-ML_b"),
+      },
       events: [],
     };
-    for (const [k] of FEEDS) cfg.u0.feed[k] = num("in-feed-" + k);
+    for (const [k] of STREAMS) cfg.u0.flows[k] = num("in-flow-" + k);
     for (const [, keys] of PARAM_GROUPS) for (const k of keys) cfg.p0[k] = num("in-p-" + k);
     for (const row of document.querySelectorAll("#events .event")) {
       const id = row.dataset.id;
       const endRaw = val(id + "-end");
-      cfg.events.push({
+      const ev = {
         start: num(id + "-start"),
         end: endRaw === "" ? null : num(id + "-end"),
         target: val(id + "-target"), mode: val(id + "-mode"),
-        value: num(id + "-value"),
-      });
+      };
+      if (val(id + "-source") === "csv") {
+        const d = csvData.get(id);
+        document.getElementById(id + "-file").setAttribute("aria-invalid", d && d.values ? "false" : "true");
+        ev.values = d && d.values ? d.values : [];
+        ev.source = d ? d.source : "";
+      } else {
+        ev.value = num(id + "-value");
+      }
+      cfg.events.push(ev);
     }
     return cfg;
   }
@@ -918,6 +1086,13 @@ function initEditor(DATA) {
     document.getElementById("total-note").textContent = n > 0 && dt > 0
       ? "Simulates " + (n * dt).toLocaleString() + " s in total."
       : "Enter a step count and a step size above zero.";
+    const total = STREAMS.reduce((sum, [k]) => sum + Number(val("in-flow-" + k)), 0), Ti = Number(val("in-T_i"));
+    const rho = density(Ti), V = Number(val("in-p-V"));
+    document.getElementById("flow-note").textContent = Number.isFinite(total) && Number.isFinite(rho) && rho > 0
+      ? "Outlet flow F = " + Math.round(total).toLocaleString() + " lb/hr ÷ ρ(T_i) " + rho.toFixed(2) + " lb/ft³ = "
+        + Math.round(total / rho).toLocaleString() + " ft³/hr"
+        + (V > 0 && total > 0 ? ", residence time " + Math.round(3600 * V * rho / total).toLocaleString() + " s." : ".")
+      : "Outlet flow F = Σ flows ÷ ρ(T_i); enter numbers to see it.";
     for (const row of document.querySelectorAll("#events .event")) {
       const id = row.dataset.id;
       const s = Number(val(id + "-start")), eRaw = val(id + "-end");
@@ -926,6 +1101,12 @@ function initEditor(DATA) {
       if (!Number.isFinite(s) || !(dt > 0)) { when.textContent = ""; continue; }
       when.textContent = "t = " + (s * dt).toLocaleString() + " s" +
         (e === null ? " to the end" : Number.isFinite(e) ? " to " + ((e + 1) * dt).toLocaleString() + " s" : "");
+      const d = csvData.get(id);
+      if (val(id + "-source") === "csv" && d && d.values && Number.isInteger(s)) {
+        const lastRow = s + d.values.length - 1, stop = e === null ? n - 1 : e;
+        if (Number.isFinite(stop) && lastRow < stop) when.textContent += "; CSV data ends at step " + lastRow + ", last value held after";
+        else if (Number.isFinite(stop) && lastRow > stop) when.textContent += "; rows after step " + stop + " are not used";
+      }
     }
     if (!busy) {
       const dirty = snapshot() !== lastRun;
@@ -943,7 +1124,9 @@ function initEditor(DATA) {
     const cfg = readForm();
     const bad = document.querySelector("#editor [aria-invalid='true']");
     if (bad) {
-      setStatus("A field is empty or not a number. Fix the highlighted field and run again.", "error");
+      setStatus(bad.tagName === "BUTTON"
+        ? "A step change takes its amount from a CSV file but no file is chosen. Choose one or switch it to a typed value."
+        : "A field is empty or not a number. Fix the highlighted field and run again.", "error");
       bad.focus();
       return;
     }

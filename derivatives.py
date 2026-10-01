@@ -2,8 +2,13 @@
 CSTR dynamic model for the Cozewith '88 EPDM/EPM mechanism.
 
 Translates equations A.54-A.82 (plus the six unlabeled second-moment dead-chain
-equations that follow A.82) from "derivations of equations.pdf" into a single
-right-hand-side function usable with scipy.integrate.solve_ivp.
+equations that follow A.82) from "derivations of equations.pdf", and the
+simplified energy balance from "more equations.pdf" (A.50 with every
+component treated as hexane), into a single right-hand-side function usable
+with scipy.integrate.solve_ivp.
+
+Units: concentrations mol/L, volume L, time s; temperature in deg F, because
+the hexane correlations are in deg F and Btu/lb.
 
 
 Naming:
@@ -16,6 +21,7 @@ Naming:
   0/100/010/001/200/020/002/110/101/011 = moment order in (M1, M2, M3)
                  e.g. P100 = first moment of P w.r.t. M1, L200 = second
                  moment of live chains w.r.t. M1, etc.
+  T            = reactor temperature, deg F
 """
 
 import numpy as np
@@ -37,6 +43,8 @@ STATE_VARS = [
     # Second moments (A.77-A.82 + trailing B200.. equations)
     "L200", "L020", "L002", "L110", "L101", "L011",
     "B200", "B020", "B002", "B110", "B101", "B011",
+    # Energy balance
+    "T",
 ]
 
 
@@ -56,18 +64,70 @@ def zero_feed():
 
 
 # ---------------------------------------------------------------------------
+# Energy balance ("more equations.pdf", p. 4): everything treated as hexane
+# except the reaction terms
+# ---------------------------------------------------------------------------
+
+L_PER_FT3 = 28.316846592
+LB_PER_FT3_PER_G_PER_L = 0.0624279606   # 1 g/L in lb/ft3
+
+
+def hexane_enthalpy(T):
+    """H(T) of hexane, Btu/lb, T in deg F."""
+    return 0.5073 * T + 2.074e-4 * T**2 + 2.53e-7 * T**3
+
+
+def hexane_cp(T):
+    """Cp(T) = dH/dT of hexane, Btu/lb/deg F, T in deg F."""
+    return 0.5073 + 4.148e-4 * T + 7.590e-7 * T**2
+
+
+def stream_density(T):
+    """Stream density rho(T), lb/ft3, T in deg F (Rackett form for hexane)."""
+    p1 = 1.0 - (T + 459.67) / 913.68
+    return 3.804 / 0.2641 ** (1.0 + p1**0.27537)
+
+
+def energy_balance(T, F, V, R_M, e):
+    """
+    dT/dt (deg F/s) from
+
+        dT/dt = 1/(V Cp) [ F (H_f - H) + V sum_j R_Mj (-dH_RMj) + dH_mix / rho ]
+
+    with H_f - H = H(T_i) - H(T) and Cp, H, rho those of hexane. Written per
+    unit mass of reactor contents, so the reaction heat is R_Mj * Mw_j (mass
+    rate) times -dH_RMj (Btu/lb), divided by rho Cp:
+
+        dT/dt = F/V (H(T_i) - H(T)) / Cp
+                + [ sum_j R_Mj Mw_j (-dH_RMj) + dH_mix / V ] / (rho Cp)
+
+    F, V : outlet flow (L/s) and volume (L)
+    R_M  : propagation rates R_M1..R_M3 (mol/L/s), keyed M1/M2/M3
+    e    : energy parameters (see derivatives())
+    """
+    cp = hexane_cp(T)
+    rho = stream_density(T)                                     # lb/ft3
+    flow = F / V * (hexane_enthalpy(e["T_i"]) - hexane_enthalpy(T)) / cp
+    # g/L/s -> lb/ft3/s, times Btu/lb -> Btu/ft3/s
+    reaction = sum(R_M[key] * e["Mw"][key] * LB_PER_FT3_PER_G_PER_L * e["neg_dH"][key]
+                   for key in ("M1", "M2", "M3"))
+    mixing = e.get("H_mix", 0.0) / 3600.0 / (V / L_PER_FT3)   # Btu/hr -> Btu/ft3/s
+    return flow + (reaction + mixing) / (rho * cp)
+
+
+# ---------------------------------------------------------------------------
 # Right-hand side
 # ---------------------------------------------------------------------------
 
 def derivatives(t, y, p, feed=None):
     """
-    Compute dy/dt for the full 29-state Cozewith '88 CSTR model.
+    Compute dy/dt for the full 37-state Cozewith '88 CSTR model.
 
     Parameters
     ----------
     t : float
         Time (unused explicitly; kept for solve_ivp's calling convention).
-    y : array_like, shape (29,)
+    y : array_like, shape (37,)
         State vector, ordered as STATE_VARS.
     p : dict
         Reactor and rate-constant parameters. Required keys:
@@ -79,6 +139,12 @@ def derivatives(t, y, p, feed=None):
             k_a, k_x, k_x2, k_x3,
             k_t, k_t2, k_t3,
             k_tr, k_tr1, k_trM2
+        Optional key "energy" turns on the energy balance; without it
+        dT/dt = 0 and the reactor is isothermal. Its keys:
+            T_i      inlet temperature, deg F
+            Mw       {"M1", "M2", "M3"} molecular weights, g/mol
+            neg_dH   {"M1", "M2", "M3"} heats of reaction -dH_RMj, Btu/lb
+            H_mix    heat of mixing dH_mix, Btu/hr (default 0)
     feed : dict, optional
         Molar feed terms m_{f,X} (= F_f * C_{X,f}) keyed by name in
         STATE_VARS. Any key not given defaults to 0 (e.g. moments other
@@ -86,7 +152,7 @@ def derivatives(t, y, p, feed=None):
 
     Returns
     -------
-    dydt : np.ndarray, shape (29,)
+    dydt : np.ndarray, shape (37,)
         Time derivatives, ordered as STATE_VARS.
     """
     if feed is None:
@@ -109,6 +175,7 @@ def derivatives(t, y, p, feed=None):
     L110, L101, L011 = s["L110"], s["L101"], s["L011"]
     B200, B020, B002 = s["B200"], s["B020"], s["B002"]
     B110, B101, B011 = s["B110"], s["B101"], s["B011"]
+    T = s["T"]
 
     F, V = p["F"], p["V"]
     k_i1, k_i2 = p["k_i1"], p["k_i2"]
@@ -136,15 +203,15 @@ def derivatives(t, y, p, feed=None):
     # ------------------------------------------------------------------
     # Components (A.54-A.60)
     # ------------------------------------------------------------------
-    dC_M1 = (mf("C_M1") / V - F / V * C_M1
-             - (k_i1 * C_C2 + k11 * P0 + k21 * Q0 + k31 * R0) * C_M1)
+    # Monomer consumption rates R_M1..R_M3, also used by the energy balance.
+    R_M1 = (k_i1 * C_C2 + k11 * P0 + k21 * Q0 + k31 * R0) * C_M1
+    R_M2 = (k_x2 * C_C1 + k_i2 * C_C2 + k12 * P0 + k22 * Q0
+            + (k_t2 + k_trM2) * (P0 + Q0 + R0)) * C_M2
+    R_M3 = (k_x3 * C_C1 + k13 * P0 + k_t3 * (P0 + Q0 + R0)) * C_M3
 
-    dC_M2 = (mf("C_M2") / V - F / V * C_M2
-             - (k_x2 * C_C1 + k_i2 * C_C2 + k12 * P0 + k22 * Q0
-                + (k_t2 + k_trM2) * (P0 + Q0 + R0)) * C_M2)
-
-    dC_M3 = (mf("C_M3") / V - F / V * C_M3
-             - (k_x3 * C_C1 + k13 * P0 + k_t3 * (P0 + Q0 + R0)) * C_M3)
+    dC_M1 = mf("C_M1") / V - F / V * C_M1 - R_M1
+    dC_M2 = mf("C_M2") / V - F / V * C_M2 - R_M2
+    dC_M3 = mf("C_M3") / V - F / V * C_M3 - R_M3
 
     dC_C1 = (mf("C_C1") / V - F / V * C_C1
              - (k_a + k_x + k_x2 * C_M2 + k_x3 * C_M3) * C_C1)
@@ -291,6 +358,18 @@ def derivatives(t, y, p, feed=None):
     dB101 = mf("B101") / V - F / V * B101 + k_death_full * L101
     dB011 = mf("B011") / V - F / V * B011 + k_death_full * L011
 
+    # ------------------------------------------------------------------
+    # Energy balance; the reaction heat counts propagation reactions only
+    # ------------------------------------------------------------------
+    e = p.get("energy")
+    if e is None:
+        dT = 0.0
+    else:
+        R_prop = {"M1": (k11 * P0 + k21 * Q0 + k31 * R0) * C_M1,
+                  "M2": (k12 * P0 + k22 * Q0) * C_M2,
+                  "M3": k13 * P0 * C_M3}
+        dT = energy_balance(T, F, V, R_prop, e)
+
     return pack({
         "C_M1": dC_M1, "C_M2": dC_M2, "C_M3": dC_M3,
         "C_C1": dC_C1, "C_C2": dC_C2, "C_H2": dC_H2, "C_Al": dC_Al,
@@ -303,6 +382,7 @@ def derivatives(t, y, p, feed=None):
         "L110": dL110, "L101": dL101, "L011": dL011,
         "B200": dB200, "B020": dB020, "B002": dB002,
         "B110": dB110, "B101": dB101, "B011": dB011,
+        "T": dT,
     })
 
 
