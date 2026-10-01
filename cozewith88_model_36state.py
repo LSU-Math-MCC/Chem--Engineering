@@ -30,7 +30,7 @@ division by zero and to ensure that the model runs smoothly. This is an
 in-progress model.
 
 State order:
-  0  T
+    0  T (degrees Fahrenheit)
   1  CM1
   2  CM2
   3  CM3
@@ -104,6 +104,9 @@ FEED_NAMES = [
 ]
 
 FT3_TO_L = 28.316846592
+BTU_TO_CAL = 252.164
+LB_TO_G = 453.59237
+SECONDS_PER_HOUR = 3600.0
 
 
 def enthalpy_from_fahrenheit(T_f):
@@ -134,8 +137,8 @@ def heat_capacity_from_fahrenheit(T_f):
         Cp = 0.5073 + 4.148e-4*T + 7.590e-7*T**2
 
     with T in degrees Fahrenheit and Cp in the source correlation's
-    ``Btu/16`` units. Convert the result to the molar heat-capacity units
-    used by the energy balance before placing it in ``energy["Cp"]``.
+    ``Btu/16`` units. Convert the result to cal/mol/degree Fahrenheit before
+    placing it in ``energy["Cp"]``.
     """
     T_f = np.asarray(T_f, dtype=float)
     return 0.5073 + 4.148e-4 * T_f + 7.590e-7 * T_f**2
@@ -165,7 +168,8 @@ def _require_feed(feed):
 def safe_initialize_state(y0=None, *, T0=300.0, min_value=1e-12):
     """Return a numerically safe state vector for the Cozewith 88 model.
 
-    The supplied model evaluates CAl / CC1 in the kinetic bracket of A.61-A.85,
+    T0 is in degrees Fahrenheit. The supplied model evaluates CAl / CC1 in the
+    kinetic bracket of A.61-A.85,
     so CC1 and CAl must both remain strictly positive during integration. This
     helper is a small safeguard for startup conditions and is intentionally
     conservative: it keeps the temperature at T0 and nudges all species/moment
@@ -638,9 +642,12 @@ def cozewith88(t, y, p):
     #
     # The supplied derivation gives:
     #
+    # The supplied derivation writes the mixing contribution as Delta H_mix/rho.
+    # Here Hmix_Btu_per_hr is explicitly a total heat rate, so its converted
+    # contribution is Q_mix directly, without another density division.
     # dT/dt = [F(H_f - H)
     #          + V sum_j R_Mj M_wj (-Delta H_RMj)
-    #          + Delta H_mix / rho] / (V Cp)
+    #          + Q_mix] / (V Cp)
     #
     # Here the component-wise forms of F(H_f-H) and Cp are assembled below:
     #   F * sum_i C_i,f (H_i,f - H_i)
@@ -661,11 +668,8 @@ def cozewith88(t, y, p):
     else:
         # Required energy data/callables:
         #
-        # energy["F"]                      feed volumetric flow for the
-        #                                   F(H_f-H) term. If omitted,
-        #                                   energy["F_f"] is used.
-        # energy["F_f"]                    backward-compatible feed flow
-        #                                   (convert feed lb/hr using rho_f)
+        # energy["F"]                      optional feed volumetric flow for
+        #                                   F(H_f-H); otherwise p["F"] is used.
         # energy["Cfeed"]                  dict of feed concentrations
         # energy["Hfeed"]                  dict of feed enthalpies
         # energy["H"]                      dict/callable current enthalpies
@@ -673,12 +677,13 @@ def cozewith88(t, y, p):
         # energy["Mw"]                     dict of molecular weights
         # energy["rho"]                    current mixture density
         # energy["rho_f"]                  feed density
-        # energy["Hmix"]                   mixing heat term
+        # energy["Hmix_Btu_per_hr"]        total mixing heat rate, Btu/hr
+        # energy["Hmix"]                   legacy key for total Btu/hr
         # energy["Cp_poly"]                polymer heat capacity
         #
         # The keys M1, M2, M3, C6, poly correspond to A.50-A.53.
 
-        F_energy = energy.get("F", energy.get("F_f", F))
+        F_energy = energy.get("F", F)
         Cfeed = energy["Cfeed"]
         Hfeed = energy["Hfeed"]
         H = energy["H"]
@@ -686,7 +691,10 @@ def cozewith88(t, y, p):
         Mw = energy["Mw"]
         rho = energy["rho"]
         rho_f = energy["rho_f"]
-        Hmix = energy.get("Hmix", 0.0)
+        Hmix_Btu_per_hr = energy.get(
+            "Hmix_Btu_per_hr", energy.get("Hmix", 0.0)
+        )
+        dH_Btu_per_lb = energy.get("dH_Btu_per_lb", energy.get("dH"))
 
         # A.52: pseudo-component C6 in the feed
         C_C6_f = (
@@ -727,30 +735,26 @@ def cozewith88(t, y, p):
 
         # A.50 uses a molar basis for the thermal balance:
         #   - C_i are molar concentrations (mol/L)
-        #   - Cp_i are molar heat capacities (cal/mol/K)
+        #   - Cp_i are molar heat capacities (cal/mol/degree Fahrenheit)
         #   - H_i and Hfeed are molar enthalpies (cal/mol)
         #   - RMj are molar reaction rates (mol/L/s)
-        #   - dH is therefore best supplied as cal/mol; if supplied as cal/g,
-        #     convert via dH_mol = dH_g * Mw before combining with RMj.
+        #   - T and dT/dt use degrees Fahrenheit and degrees Fahrenheit/s.
+        #   - reaction heats are supplied as Btu/lb and converted to cal/mol.
         # If any thermodynamic property is supplied on a mass basis, convert it
         # with the molecular weight before combining with C_i and Cp_i.
         # Sum_i C_i Cp_i in the denominator of A.50.
         denom = sum(C[key] * Cp[key] for key in ["M1", "M2", "M3", "C6", "poly"])
 
-        # Feed enthalpy contribution: F(H_f - H).
+        # Component-wise feed enthalpy, including the C6 solvent pseudo-component.
         feed_term = F_energy * sum(
             Cfeed[key] * (Hfeed[key] - H[key])
             for key in ["M1", "M2", "M3", "C6", "poly"]
         )
 
-        # A.46-A.49: reaction heat uses RM1, RM2, RM3.
-        # If energy["dH"] is supplied on a mass basis (cal/g), convert it to
-        # molar basis before multiplying by RMj (mol/L/s): dH_mol = dH_g * Mw.
-        # This keeps the reaction term consistent with the molar basis used by
-        # the species balances and Cp terms.
-        dH_M1 = energy["dH"]["M1"] * Mw["M1"]
-        dH_M2 = energy["dH"]["M2"] * Mw["M2"]
-        dH_M3 = energy["dH"]["M3"] * Mw["M3"]
+        # Convert Btu/lb -> cal/g -> cal/mol before applying molar reaction rates.
+        dH_M1 = dH_Btu_per_lb["M1"] * BTU_TO_CAL / LB_TO_G * Mw["M1"]
+        dH_M2 = dH_Btu_per_lb["M2"] * BTU_TO_CAL / LB_TO_G * Mw["M2"]
+        dH_M3 = dH_Btu_per_lb["M3"] * BTU_TO_CAL / LB_TO_G * Mw["M3"]
 
         reaction_term = V * (
             RM1 * (-dH_M1)
@@ -758,9 +762,8 @@ def cozewith88(t, y, p):
             + RM3 * (-dH_M3)
         )
 
-        # The mixing enthalpy is supplied per mass, so convert it with the
-        # current mixture density before adding it to the energy numerator.
-        mixing_term = Hmix / rho
+        # Hmix is a total heat rate, so convert Btu/hr directly to cal/s.
+        mixing_term = Hmix_Btu_per_hr * BTU_TO_CAL / SECONDS_PER_HOUR
 
         d[0] = (feed_term + reaction_term + mixing_term) / (V * denom)
 
@@ -999,50 +1002,71 @@ if __name__ == "__main__":
         "kx2": 1.0e-2,
         "kx3": 8.0e-3,
 
-        # Energy data should be filled in after the thermodynamic
-        # definitions from the earlier part of the derivation are
-        # supplied. The values below are dimensionally consistent and kept
-        # small enough for a stable short transient test.
+        # Reaction heats are supplied in Btu/lb; Hmix is a total Btu/hr rate.
+        # The energy balance converts both to its internal cal-based units.
         "energy": {
-            "F_f": 1.0e-2,
-            "Cfeed": {k: 1.0e-2 for k in ["M1", "M2", "M3", "C6", "poly"]},
-            "Hfeed": {k: 1.0 for k in ["M1", "M2", "M3", "C6", "poly"]},
-            "H": {k: 0.5 for k in ["M1", "M2", "M3", "C6", "poly"]},
-            "Cp": {k: 1.0e-1 for k in ["M1", "M2", "M3", "C6", "poly"]},
+            "Cfeed": {
+                "M1": 1.0e-2,
+                "M2": 1.0e-2,
+                "M3": 1.0e-2,
+                "C6": 1.0e-2,
+                "poly": 1.0e-2,
+            },
+            "Hfeed": {
+                "M1": 1.0,
+                "M2": 1.0,
+                "M3": 1.0,
+                "C6": 1.0,
+                "poly": 1.0,
+            },
+            "H": {
+                "M1": 0.5,
+                "M2": 0.5,
+                "M3": 0.5,
+                "C6": 0.5,
+                "poly": 0.5,
+            },
+            "Cp": {
+                # Placeholder values in cal/mol/degree Fahrenheit.
+                "M1": 1.0e-1,
+                "M2": 1.0e-1,
+                "M3": 1.0e-1,
+                "C6": 1.0e-1,
+                "poly": 1.0e-1,
+            },
             "Mw": {
                 "M1": 28.0,
                 "M2": 42.0,
                 "M3": 120.0,
                 "C6": 86.0,
-                "C3": 44.0,
-                "C2": 30.0,
-                "H2": 2.0,
-                "C1": 192.75,
-                "Al": 120.56,
             },
             "rho": 1.0,
             "rho_f": 1.0,
-            "Hmix": 0.0,
+            "Hmix_Btu_per_hr": 1.0e6,
             "Cpoly": 0.0,
-            "dH": {"M1": -1.0, "M2": -1.2, "M3": -1.4},
+            "dH_Btu_per_lb": {
+                "M1": 1400.0,
+                "M2": 950.0,
+                "M3": 700.0,
+            },
         },
     }
 
     # Start from a numerically safe state: the model uses CAl/CC1 in the
     # kinetic bracket, so both concentrations must remain positive.
     y0 = np.full(36, 1e-3, dtype=float)
-    y0 = safe_initialize_state(y0, T0=300.0, min_value=1e-12)
+    y0 = safe_initialize_state(y0, T0=40.0, min_value=1e-12)
     y0[4] = 1.0
     y0[7] = 0.5
 
-    t_eval, y = integrate_model(
+    t_hist, y_hist = integrate_model(
         params,
         y0,
-        t_span=(0.0, 5.0),
-        t_eval=np.linspace(0.0, 5.0, 501),
+        t_span=(0.0, 10.0),
+        t_eval=np.linspace(0.0, 10.0, 1001),
     )
 
-    print(f"t_end = {t_eval[-1]:.3f}")
-    print(f"T, CC1, CAl = {y[-1, 0]}, {y[-1, 4]}, {y[-1, 7]}")
+    print(f"t_end = {t_hist[-1]:.3f}")
+    print(f"T, CC1, CAl = {y_hist[-1, 0]}, {y_hist[-1, 4]}, {y_hist[-1, 7]}")
 
   
