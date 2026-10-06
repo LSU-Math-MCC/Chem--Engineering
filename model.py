@@ -42,6 +42,23 @@ KINETIC_KEYS = [
     "k_tr", "k_tr1", "k_trM2",
 ]
 
+# Species whose starting concentration (mol/L) can be given in config["x0"];
+# any not given start at the feed composition (reactor full of feed).
+INITIAL_KEYS = ["C_M1", "C_M2", "C_M3", "C_C1", "C_C2", "C_H2", "C_Al"]
+RANKINE = 459.67
+
+
+def arrhenius(p, T):
+    """Rate constants at reactor temperature T (deg F):
+
+        k = k0 * exp(-E * (1/T - 1/T_ref))
+
+    with k0 = p[key] (the value at T_ref), E = p["E"][key] in deg R (Ea/R)
+    and both temperatures taken as absolute (Rankine). E = 0 keeps k = k0.
+    """
+    inv = 1.0 / (T + RANKINE) - 1.0 / (p["T_ref"] + RANKINE)
+    return {key: p[key] * np.exp(-p["E"][key] * inv) for key in KINETIC_KEYS}
+
 # Feed streams: key, model state it feeds (None = solvent only adds volume),
 # molecular weight (lb/lbmol; monomers use p["Mw"] instead).
 STREAMS = [
@@ -98,7 +115,7 @@ def der(t, states, u, p):
         raise ValueError(f"Reactor temperature reached {T:.0f} deg F, outside the "
                          f"{T_RANGE[0]:.0f} to {T_RANGE[1]:.0f} deg F range of the density correlation.")
     F, feed, _ = operating_point(u, p)
-    rates = {key: p[key] for key in KINETIC_KEYS}
+    rates = arrhenius(p, T)
     rates.update(F=F, V=p["V"] * L_PER_FT3)
     rates["energy"] = {"T_i": u["T_i"], "Mw": p["Mw"], "neg_dH": p["neg_dH"], "H_mix": p["H_mix"]}
     return derivatives(t, states, rates, feed=feed)
@@ -242,7 +259,8 @@ def write_csv(path, t, X, U, P):
 #             inlet temperature T_i (deg F)
 #   p0        reactor volume (ft3), initial reactor temperature T0 (deg F),
 #             rate constants, molecular weights, energy-balance data,
-#             Mooney viscosity constants
+#             Mooney viscosity constants, Arrhenius data (T_ref, E per k)
+#   x0        starting concentrations (mol/L) by species; empty = feed
 #   events    step changes applied on top of u0 / p0:
 #               start   first step k it applies to
 #               end     last step k (None = until the end of the run)
@@ -286,7 +304,14 @@ DEFAULT_CONFIG = {
         "H_mix": 1.0e6,
         # Mooney viscosity ML = (a + b PD) Mw
         "ML_a": 2.0e-4, "ML_b": 2.0e-4,
+        # Arrhenius k = k0 exp(-E (1/T - 1/T_ref)): the rate constants above are
+        # k0 at T_ref (deg F); E in deg R (Ea/R), 0 = no temperature dependence.
+        "T_ref": 90.0,
+        "E": {key: 0.0 for key in KINETIC_KEYS},
     },
+    # Starting concentrations (mol/L) by species, e.g. {"C_M1": 0.5};
+    # species left out start at the feed composition.
+    "x0": {},
     "events": [
         # hydrogen feed tripled -> shorter chains
         {"start": 50, "end": None, "target": "flow.H2", "mode": "multiply", "value": 3.0},
@@ -359,6 +384,22 @@ def _validate(cfg):
     p0["H_mix"] = _number(p0.get("H_mix"), "Heat of mixing")
     p0["ML_a"] = _number(p0.get("ML_a"), "ML constant a")
     p0["ML_b"] = _number(p0.get("ML_b"), "ML constant b")
+    # Older saved configs have no Arrhenius data: use T_ref 90 deg F and E = 0.
+    p0["T_ref"] = _temperature(p0.get("T_ref", 90.0), "Arrhenius reference temperature T_ref")
+    E = p0.get("E") or {}
+    for key in E:
+        if key not in KINETIC_KEYS:
+            raise ValueError(f"Unknown rate constant {key!r} in E.")
+    p0["E"] = {key: _number(E.get(key, 0.0), f"Activation energy E for {key}") for key in KINETIC_KEYS}
+
+    x0 = {k: v for k, v in (cfg.get("x0") or {}).items() if v not in (None, "")}
+    for key in x0:
+        if key not in INITIAL_KEYS:
+            raise ValueError(f"Unknown starting concentration {key!r}; use one of {', '.join(INITIAL_KEYS)}.")
+        x0[key] = _number(x0[key], f"Starting concentration {key}", positive=True)
+    if x0.get("C_C1", 1.0) <= 0.0:
+        raise ValueError("Starting C_C1 must be above zero: the model divides by C_C1.")
+    cfg["x0"] = x0
 
     for i, e in enumerate(cfg.get("events", []), start=1):
         label = f"Step change {i}"
@@ -432,11 +473,13 @@ def build_inputs(config=DEFAULT_CONFIG):
         P.append(p)
 
     # Reactor initially full of the feed mixture, no catalyst or polymer yet,
-    # at the starting reactor temperature T0.
+    # at the starting reactor temperature T0; cfg["x0"] overrides any species.
     F, feed, _ = operating_point(u0, p0)
     x0 = np.zeros(len(STATE_VARS))
     for state, value in feed.items():
         x0[STATE_VARS.index(state)] = value / F
+    for state, value in cfg["x0"].items():
+        x0[STATE_VARS.index(state)] = value
     x0[STATE_VARS.index("T")] = p0["T0"]
     return x0, U, P, cfg["dt"]
 

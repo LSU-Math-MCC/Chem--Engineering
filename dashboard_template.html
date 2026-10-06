@@ -548,6 +548,17 @@ function mount(DATA, keepTime) {
     chains: k => [["Polymer chains", "λ₀ = P₀ + Q₀ + R₀ + B₀",
       nv(c("P0", k)) + " + " + nv(c("Q0", k)) + " + " + nv(c("R0", k)) + " + " + nv(c("B0", k)),
       nv((c("live_chains", k) || 0) + (c("dead_chains", k) || 0)) + " mol/L"]],
+    // Arrhenius: every k with E != 0 (k11 as the example when all E are 0).
+    kin: k => {
+      const T = c("T", k), Tr = P0 ? P0.T_ref ?? 90 : null, E = (P0 && P0.E) || {};
+      const keys = Object.keys(E).filter(key => E[key]);
+      return (keys.length ? keys : ["k11"]).map(key => {
+        const k0 = paramAt(key, k), e = E[key] || 0;
+        const kT = ok(k0, T, Tr) ? k0 * Math.exp(-e * (1 / (T + 459.67) - 1 / (Tr + 459.67))) : null;
+        return [key + " at reactor T", "k = k₀ · exp(−E · (1/T − 1/Tr))",
+          nv(k0) + " × exp(−" + nv(e) + " × (1/" + nv(T + 459.67) + " − 1/" + nv(Tr + 459.67) + ")) °R", nv(kT)];
+      });
+    },
     tau: k => {
       const V = paramAt("V", k), F = c("F", k);
       return [["Residence time", "τ = V / F × 60", nv(V) + " ft³ / " + nv(F) + " ft³/hr × 60 min/hr",
@@ -682,6 +693,7 @@ function mount(DATA, keepTime) {
   const changesPanel = h("section", { class: "card changes", "aria-label": "Changes during the run" }, [changesList, eqTitle, eqBox]);
   const EQ_GROUPS = [
     ["Reactor", ["inputs", "tau", "temp", "pr"]],
+    ["Kinetics", ["kin"]],
     ["Molecular weight", ["mw", "pdi", "ml", "chains"]],
     ["Composition and conversion", ["comp", "conv"]],
   ];
@@ -970,6 +982,10 @@ function initEditor(DATA) {
     ["M1", "Ethylene"], ["M2", "Propylene"], ["M3", "Diene"], ["C6", "Hexane (solvent)"],
     ["cat", "Catalyst (VCl₄)"], ["Al", "Aluminum alkyl"], ["H2", "Hydrogen"],
   ];
+  // Starting concentrations that can be set (model.INITIAL_KEYS); blank = feed composition.
+  const INIT = [["C_M1", "Ethylene", "M1"], ["C_M2", "Propylene", "M2"], ["C_M3", "Diene", "M3"],
+    ["C_C1", "Inactive catalyst", "cat"], ["C_C2", "Active catalyst", null], ["C_H2", "Hydrogen", "H2"], ["C_Al", "Aluminum alkyl", "Al"]];
+  const FIXED_MW = { cat: 192.75, Al: 120.56, H2: 2.0 };
   const PARAM_GROUPS = [
     ["Initiation and propagation", ["k_i1", "k_i2", "k11", "k12", "k13", "k21", "k22", "k31"]],
     ["Catalyst activation and deactivation", ["k_a", "k_x", "k_x2", "k_x3"]],
@@ -1091,6 +1107,13 @@ function initEditor(DATA) {
       h("p", { class: "hint", id: "flow-note" }),
     ]);
 
+    const init = h("fieldset", { class: "fs" }, [
+      h("legend", {}, ["Initial conditions, t = 0"]),
+      h("p", { class: "hint" }, ["Reactor contents at the start, mol/L. Leave a box blank to start at the feed composition (the reactor full of feed); the grey number is that value. Polymer moments start at zero."]),
+      h("div", { class: "fields cols-2" }, [field("in-p-T0", "Reactor temperature T0, °F", cfg.p0.T0)]
+        .concat(INIT.map(([k, n]) => field("in-x0-" + k, n + " " + k, (cfg.x0 || {})[k])))),
+    ]);
+
     const rows = h("div", { class: "events", id: "events" });
     const addBtn = h("button", { class: "btn", type: "button", id: "add-event" }, ["Add step change"]);
     const steps = h("fieldset", { class: "fs" }, [
@@ -1202,7 +1225,6 @@ function initEditor(DATA) {
           h("legend", {}, ["Reactor and molecular weights"]),
           h("div", { class: "fields cols-2" }, [
             field("in-p-V", "Volume V, ft³", cfg.p0.V),
-            field("in-p-T0", "Starting reactor T, °F", cfg.p0.T0),
             field("in-mw-M1", "Ethylene, g/mol", cfg.p0.Mw.M1),
             field("in-mw-M2", "Propylene, g/mol", cfg.p0.Mw.M2),
             field("in-mw-M3", "Diene, g/mol", cfg.p0.Mw.M3),
@@ -1224,15 +1246,23 @@ function initEditor(DATA) {
             field("in-p-ML_b", "b", cfg.p0.ML_b),
           ]),
         ]),
+        h("fieldset", { class: "fs" }, [
+          h("legend", {}, ["Arrhenius k = k₀ · exp(−E · (1/T − 1/Tr))"]),
+          h("p", { class: "hint" }, ["Each rate constant below is k₀, its value at Tr. E is Ea/R in °R; E = 0 means no temperature dependence. T and Tr are converted to Rankine (°F + 459.67)."]),
+          h("div", { class: "fields cols-2" }, [field("in-p-T_ref", "Reference temperature Tr, °F", cfg.p0.T_ref ?? 90)]),
+        ]),
       ].concat(PARAM_GROUPS.map(([title, keys]) => h("fieldset", { class: "fs" }, [
         h("legend", {}, [title]),
-        h("div", { class: "fields cols-2" }, keys.map(k => field("in-p-" + k, k, cfg.p0[k]))),
+        h("div", { class: "fields cols-2" }, keys.flatMap(k => [
+          field("in-p-" + k, k + " (k₀)", cfg.p0[k]),
+          field("in-E-" + k, "E for " + k + ", °R", (cfg.p0.E || {})[k] ?? 0),
+        ])),
       ])))),
     ]);
 
     const actions = h("div", { class: "actions" }, [runBtn, planBtn, planInput, resetBtn, csvLink, status]);
     form.replaceChildren(
-      h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base]), h("div", { class: "col" }, [steps])]),
+      h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base, init]), h("div", { class: "col" }, [steps])]),
       params, actions,
     );
     refresh();
@@ -1247,11 +1277,14 @@ function initEditor(DATA) {
         Mw: { M1: num("in-mw-M1"), M2: num("in-mw-M2"), M3: num("in-mw-M3") },
         neg_dH: { M1: num("in-dh-M1"), M2: num("in-dh-M2"), M3: num("in-dh-M3") },
         H_mix: num("in-p-H_mix"), ML_a: num("in-p-ML_a"), ML_b: num("in-p-ML_b"),
+        T_ref: num("in-p-T_ref"), E: {},
       },
+      x0: {},
       events: [],
     };
+    for (const [k] of INIT) if (val("in-x0-" + k) !== "") cfg.x0[k] = num("in-x0-" + k);
     for (const [k] of STREAMS) cfg.u0.flows[k] = num("in-flow-" + k);
-    for (const [, keys] of PARAM_GROUPS) for (const k of keys) cfg.p0[k] = num("in-p-" + k);
+    for (const [, keys] of PARAM_GROUPS) for (const k of keys) { cfg.p0[k] = num("in-p-" + k); cfg.p0.E[k] = num("in-E-" + k); }
     for (const row of document.querySelectorAll("#events .event")) {
       const id = row.dataset.id;
       const endRaw = val(id + "-end");
@@ -1292,6 +1325,13 @@ function initEditor(DATA) {
         + Math.round(total / rho).toLocaleString() + " ft³/hr"
         + (V > 0 && total > 0 ? ", residence time " + Math.round(3600 * V * rho / total).toLocaleString() + " s." : ".")
       : "Outlet flow F = Σ flows ÷ ρ(T_i); enter numbers to see it.";
+    // Feed composition C = m_f / F (mol/L) as the placeholder of each blank starting concentration.
+    const Fft3 = Number.isFinite(total) && rho > 0 ? total / rho : NaN;
+    for (const [k, , stream] of INIT) {
+      const mw = stream === null ? null : (FIXED_MW[stream] ?? Number(val("in-mw-" + stream)));
+      const c0 = stream === null ? 0 : Number(val("in-flow-" + stream)) / mw * 453.59237 / (Fft3 * 28.316846592);
+      document.getElementById("in-x0-" + k).setAttribute("placeholder", Number.isFinite(c0) ? "feed: " + (c0 === 0 ? "0" : c0.toPrecision(3)) : "feed");
+    }
     for (const row of document.querySelectorAll("#events .event")) {
       const id = row.dataset.id;
       const s = Number(val(id + "-start")), eRaw = val(id + "-end");

@@ -82,9 +82,37 @@ aluminum alkyl 120.56 and H₂ 2.
 
 $$\tau = \frac{V}{F} \times 60 \quad [\text{min}], \quad V \text{ in ft}^3,\ F \text{ in ft}^3/\text{hr}$$
 
-**Starting state:** the reactor is full of feed, so $C_X(0) = m_{f,X}/F$ for
-the fed species and $T(0) = T_0$. Everything else (active catalyst and all
-moments) starts at 0.
+**Starting state.** By default, the reactor is full of feed, so
+$C_X(0) = m_{f,X}/F$ for the fed species and $T(0) = T_0$. Everything else
+(active catalyst and all moments) starts at 0. Any species concentration
+($C_{M1} \dots C_{Al}$) can be given its own starting value instead: set it in
+*Initial conditions* on the dashboard, in `x0` in the config, or with a
+`C_M1,0.5` row in a plan CSV.
+
+---
+
+## 2b. Temperature dependence of the rate constants (Arrhenius)
+
+Every rate constant in sections 3–6 is evaluated at the current reactor
+temperature:
+
+$$k(T) = k_0 \exp\!\left[-E\left(\frac{1}{T} - \frac{1}{T_r}\right)\right]$$
+ight)
+ight]$$
+
+| Symbol | Meaning | Default |
+|---|---|---|
+| $k_0$ | Value of the constant at $T_r$ (the numbers in section 9) | current defaults |
+| $E$ | Activation energy divided by R, in °R (one per constant) | 0.0 |
+| $T_r$ | Reference temperature | 90 °F |
+
+T and Tr are in Rankine (°F + 459.67), so 1/T stays finite near 0 °F. With
+E = 0, k = k₀ at every temperature, which reproduces the earlier constant-k
+model exactly. When E > 0, a hotter reactor gives a larger k. For example, with
+E = 3000 °R, k₁₁ goes from 800 at 90 °F to 1,061 at 120 °F.
+
+The code is `arrhenius()` in `model.py`, called on every evaluation of the
+right-hand side.
 
 ---
 
@@ -259,6 +287,8 @@ and time is in s.
 | Molecular weights | M1 28, M2 42, M3 120 g/mol |
 | Heats of reaction −ΔH | M1 1400, M2 950, M3 700 Btu/lb; ΔH_mix = 1.0e6 Btu/hr |
 | Mooney | a = 2e-4, b = 2e-4 |
+| Arrhenius | Tr = 90 °F; E = 0 for every constant (k = k₀) |
+| Initial conditions | T0 = 90 °F; species at the feed composition |
 
 The rate constants are not measured data. With these defaults the run ends
 near steady state at Mn ≈ 22,000, PDI ≈ 2.0, ML ≈ 27, T ≈ 120 °F, a residence
