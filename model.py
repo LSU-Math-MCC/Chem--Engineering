@@ -254,10 +254,11 @@ def write_csv(path, t, X, U, P):
 #               source  label for values, e.g. "feeds.csv: H2" (display only)
 #
 # Flows, MWs, T_i, T, heats of reaction and dH_mix are from the course notes.
-# The rate constants (mol/L, s) are not from data: the propagation and
-# transfer constants were fitted so the steady state with these feeds hits
-# the whiteboard targets (Mn ~50k, conversions ethylene ~87.5%, propylene
-# ~30%, diene ~70%). The scaled Table 4.29 grades need their scale factors.
+# The rate constants (mol/L, s) are not from data. V, k11, k21, k31, k_tr
+# and the Mooney constants a, b were set by the team (2026-10-06); with these
+# feeds the steady state gives Mn ~22k and conversions ethylene ~93%,
+# propylene ~30%, diene ~65%. The scaled Table 4.29 grades need their scale
+# factors.
 
 DEFAULT_CONFIG = {
     "N": 150,
@@ -268,23 +269,23 @@ DEFAULT_CONFIG = {
         "T_i": -32.0,
     },
     "p0": {
-        "V": 420.0,
+        "V": 650.0,
         "T0": 90.0,
         # Initiation / propagation
         "k_i1": 50.0, "k_i2": 5.0,
-        "k11": 385.0, "k12": 29.0, "k13": 189.0,
-        "k21": 308.0, "k22": 10.9, "k31": 154.0,
+        "k11": 800.0, "k12": 29.0, "k13": 189.0,
+        "k21": 500.0, "k22": 10.9, "k31": 150.0,
         # Catalyst activation / deactivation
         "k_a": 0.5, "k_x": 5e-3, "k_x2": 1e-3, "k_x3": 1e-3,
         # Termination / chain transfer
         "k_t": 0.0202, "k_t2": 1e-3, "k_t3": 1e-3,
-        "k_tr": 1.16e-5, "k_tr1": 2.37, "k_trM2": 1e-3,
+        "k_tr": 1.0e-4, "k_tr1": 2.37, "k_trM2": 1e-3,
         "Mw": {"M1": 28.0, "M2": 42.0, "M3": 120.0},
         # Energy balance: -dH_RMj (Btu/lb) and dH_mix (Btu/hr)
         "neg_dH": {"M1": 1400.0, "M2": 950.0, "M3": 700.0},
         "H_mix": 1.0e6,
         # Mooney viscosity ML = (a + b PD) Mw
-        "ML_a": 1.0, "ML_b": 1.0,
+        "ML_a": 2.0e-4, "ML_b": 2.0e-4,
     },
     "events": [
         # hydrogen feed tripled -> shorter chains
@@ -455,9 +456,23 @@ def example_inputs():
 
 
 if __name__ == "__main__":
-    t, X, U, P = run(DEFAULT_CONFIG, "results.csv")
+    import json
+    import sys
+    from pathlib import Path
+
+    from plan import load_plan
+
+    # python model.py [plan.csv]: run the default inputs, or a plan CSV on top of them.
+    config = DEFAULT_CONFIG
+    if len(sys.argv) > 1:
+        plan_path = Path(sys.argv[1])
+        config, summary = load_plan(plan_path.read_text(encoding="utf-8-sig"), DEFAULT_CONFIG, plan_path.name)
+        config = validate_config(config)
+        print(f"Plan {plan_path.name}: {summary}")
+    t, X, U, P = run(config, "results.csv")
+    Path("results_config.json").write_text(json.dumps(validate_config(config), indent=2), encoding="utf-8")
     last = properties(X[-1], U[-1], P[-1])
     T = X[-1][STATE_VARS.index("T")]
-    print(f"Simulated {len(U)} steps of {DEFAULT_CONFIG['dt']:g} s -> results.csv")
+    print(f"Simulated {len(U)} steps of {config['dt']:g} s -> results.csv")
     print(f"Final Mn = {last['Mn']:.4g}, Mw = {last['Mw']:.4g}, PDI = {last['PDI']:.3f}, "
           f"PR = {last['PR']:.4g} lb/hr, T = {T:.1f} F, ML = {last['ML']:.4g}")

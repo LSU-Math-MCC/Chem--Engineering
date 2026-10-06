@@ -18,6 +18,7 @@ from pathlib import Path
 
 import model
 from dashboard import read_csv, render_page
+from plan import load_plan
 
 HERE = Path(__file__).parent
 CSV_PATH = HERE / "results.csv"
@@ -68,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, "Not found", "text/plain")
 
     def do_POST(self):
-        if self.path != "/api/run":
+        if self.path not in ("/api/run", "/api/plan"):
             self._send(404, "Not found", "text/plain")
             return
         length = int(self.headers.get("Content-Length", 0))
@@ -76,8 +77,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(413, {"error": "Request is too large."})
             return
         try:
-            config = json.loads(self.rfile.read(length))
-            self._json(200, run_config(config))
+            body = json.loads(self.rfile.read(length))
+            if self.path == "/api/plan":
+                # Plan CSV -> config for the form; nothing is run yet.
+                config, summary = load_plan(str(body.get("text", "")), body.get("base") or state["config"],
+                                            str(body.get("name") or "plan.csv")[:200])
+                self._json(200, {"config": model.validate_config(config), "summary": summary})
+            else:
+                self._json(200, run_config(body))
         except (ValueError, KeyError, TypeError) as exc:
             self._json(400, {"error": str(exc) or "The inputs could not be read."})
         except RuntimeError as exc:           # solver failure
@@ -85,7 +92,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         if self.command == "POST":
-            sys.stderr.write(f"[{self.log_date_time_string()}] run requested\n")
+            what = "plan loaded" if self.path == "/api/plan" else "run requested"
+            sys.stderr.write(f"[{self.log_date_time_string()}] {what}\n")
 
 
 def main():

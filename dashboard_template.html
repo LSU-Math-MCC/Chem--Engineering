@@ -548,6 +548,11 @@ function mount(DATA, keepTime) {
     chains: k => [["Polymer chains", "λ₀ = P₀ + Q₀ + R₀ + B₀",
       nv(c("P0", k)) + " + " + nv(c("Q0", k)) + " + " + nv(c("R0", k)) + " + " + nv(c("B0", k)),
       nv((c("live_chains", k) || 0) + (c("dead_chains", k) || 0)) + " mol/L"]],
+    tau: k => {
+      const V = paramAt("V", k), F = c("F", k);
+      return [["Residence time", "τ = V / F × 60", nv(V) + " ft³ / " + nv(F) + " ft³/hr × 60 min/hr",
+        (ok(V, F) && F > 0 ? nv(V / F * 60) : "–") + " min"]];
+    },
     inputs: k => {
       const total = inputKeys.filter(key => key.startsWith("flow_")).reduce((sum, key) => sum + (c(key, k) || 0), 0);
       return [["Outlet flow", "F = Σ Fᵢ / ρ(Tᵢ)", nv(total) + " lb/hr / " + nv(rhoAt(c("T_i", k))) + " lb/ft³", nv(c("F", k)) + " ft³/hr"]];
@@ -676,7 +681,7 @@ function mount(DATA, keepTime) {
   const eqBox = h("div", { class: "eq" });
   const changesPanel = h("section", { class: "card changes", "aria-label": "Changes during the run" }, [changesList, eqTitle, eqBox]);
   const EQ_GROUPS = [
-    ["Reactor", ["inputs", "temp", "pr"]],
+    ["Reactor", ["inputs", "tau", "temp", "pr"]],
     ["Molecular weight", ["mw", "pdi", "ml", "chains"]],
     ["Composition and conversion", ["comp", "conv"]],
   ];
@@ -1042,6 +1047,29 @@ function initEditor(DATA) {
   const runBtn = h("button", { class: "btn btn-primary", type: "submit", id: "run-btn" }, ["Run simulation"]);
   const resetBtn = h("button", { class: "btn", type: "button", id: "reset-btn" }, ["Reset to defaults"]);
   const csvLink = h("a", { class: "link", href: "/results.csv", id: "csv-link" }, ["Download results.csv"]);
+  // Plan CSV: fills the whole form (starting values and step changes) from one file; see plan.py.
+  const planInput = h("input", { type: "file", accept: ".csv,text/csv,text/plain", hidden: "" });
+  const planBtn = h("button", { class: "btn", type: "button", id: "plan-btn",
+    title: "List layout: input,value,change,start,end. Timeline layout: step (or t) then one column per input." }, ["Load plan CSV…"]);
+  planBtn.addEventListener("click", () => planInput.click());
+  planInput.addEventListener("change", async () => {
+    const file = planInput.files[0];
+    planInput.value = "";
+    if (!file || busy) return;
+    let base;
+    try { base = JSON.parse(snapshot()); } catch { base = DATA.config; }
+    if (![base.N, base.dt].every(Number.isFinite)) base = DATA.config;
+    try {
+      const res = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, text: await file.text(), base }) });
+      const out = await res.json().catch(() => ({ error: "The server sent a response the page could not read." }));
+      if (!res.ok) { setStatus("Could not load " + file.name + ": " + (out.error || "unknown error."), "error"); return; }
+      build(out.config);
+      setStatus("Loaded " + file.name + ": " + out.summary + ". Press Run simulation to use it.", "pending");
+    } catch (err) {
+      setStatus("Could not reach the server. Check that python dashboard_server.py is still running, then try again.", "error");
+    }
+  });
 
   function build(cfg) {
     csvData.clear();
@@ -1202,7 +1230,7 @@ function initEditor(DATA) {
       ])))),
     ]);
 
-    const actions = h("div", { class: "actions" }, [runBtn, resetBtn, csvLink, status]);
+    const actions = h("div", { class: "actions" }, [runBtn, planBtn, planInput, resetBtn, csvLink, status]);
     form.replaceChildren(
       h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base]), h("div", { class: "col" }, [steps])]),
       params, actions,
