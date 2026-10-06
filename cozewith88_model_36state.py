@@ -105,12 +105,12 @@ FEED_NAMES = [
     "B200", "B020", "B002", "B110", "B101", "B011",
 ]
 
-FT3_TO_L = 28.316846592
-LITERS_PER_CUBIC_METER = 1000.0
-BTU_TO_CAL = 252.164
-LB_TO_G = 453.59237
-LB_PER_FT3_TO_G_PER_L = LB_TO_G / FT3_TO_L
-SECONDS_PER_HOUR = 3600.0
+FT3_TO_L = 28.316846592  # L/ft^3
+LITERS_PER_CUBIC_METER = 1000.0  # L/m^3
+BTU_TO_CAL = 252.164  # cal/Btu
+LB_TO_G = 453.59237  # g/lb
+LB_PER_FT3_TO_G_PER_L = LB_TO_G / FT3_TO_L  # (g/L)/(lb/ft^3)
+SECONDS_PER_HOUR = 3600.0  # s/hr
 
 
 def enthalpy_from_fahrenheit(T_f):
@@ -133,20 +133,39 @@ def enthalpy_from_fahrenheit(T_f):
 
 
 def heat_capacity_from_fahrenheit(T_f):
-    """Return the supplied heat-capacity correlation at Fahrenheit T.
+    """Return dH/dT from the supplied enthalpy correlation at Fahrenheit T.
 
-    The correlation is:
+    Differentiating H(T) gives:
 
-        Cp = 0.5073 + 4.148e-4*T + 7.590e-7*T**2
+        Cp = 0.5073 + 4.094e-4*T + 7.590e-7*T**2
 
     with T in degrees Fahrenheit and Cp in Btu/(lb degree Fahrenheit).
-    Convert to cal/mol/degree Fahrenheit by multiplying by
-    BTU_TO_CAL / LB_TO_G * molecular_weight_g_per_mol. The energy balance
-    expects ``energy["Cp"]`` in cal/mol/degree Celsius, so multiply that
-    converted value by 9/5 before placing it there.
+    Convert to cal/(mol degree Celsius) with
+    ``heat_capacity_cal_mol_c_from_fahrenheit`` and a molecular weight in g/mol.
     """
     T_f = np.asarray(T_f, dtype=float)
-    return 0.5073 + 4.148e-4 * T_f + 7.590e-7 * T_f**2
+    return 0.5073 + 4.094e-4 * T_f + 7.590e-7 * T_f**2
+
+
+def heat_capacity_cal_mol_c_from_fahrenheit(T_f, molecular_weight_g_per_mol):
+    """Convert dH/dT to cal/(mol degree Celsius).
+
+    Starting from Btu/(lb degree Fahrenheit), multiply by cal/Btu and
+    g/lb conversion factors, then by molecular weight in g/mol. Multiply by
+    9/5 to convert the per-degree-Fahrenheit basis to per-degree-Celsius.
+    """
+    molecular_weight = np.asarray(molecular_weight_g_per_mol, dtype=float)
+    if not np.all(np.isfinite(molecular_weight)) or np.any(molecular_weight <= 0.0):
+        raise ValueError("Molecular weight must be finite and positive.")
+
+    cp_btu_lb_f = heat_capacity_from_fahrenheit(T_f)
+    return (
+        cp_btu_lb_f
+        * BTU_TO_CAL
+        / LB_TO_G
+        * molecular_weight
+        * 9.0 / 5.0
+    )
 
 
 def stream_density_from_fahrenheit(T_f):
@@ -169,7 +188,7 @@ def stream_density_from_fahrenheit(T_f):
 
 
 def density_lb_ft3_to_g_l(rho_lb_ft3):
-    """Convert density from lb/ft^3 to g/L."""
+    """Convert lb/ft^3 to g/L using 453.59237 g/lb and 28.316846592 L/ft^3."""
     return np.asarray(rho_lb_ft3, dtype=float) * LB_PER_FT3_TO_G_PER_L
 
 
@@ -179,7 +198,12 @@ def _require_feed(feed):
 
 
 def mass_flows_lb_hr_to_mol_hr(mass_flows_lb_hr, molecular_weights_g_per_mol):
-    """Convert external mass flows in lb/hr to molar flows in mol/hr."""
+    """Convert lb/hr to mol/hr using g/lb and molecular weights in g/mol.
+
+    Each flow is multiplied by 453.59237 g/lb and divided by its molecular
+    weight in g/mol; the resulting mass and molecular-weight units cancel to
+    mol/hr.
+    """
     missing_weights = set(mass_flows_lb_hr) - set(molecular_weights_g_per_mol)
     if missing_weights:
         names = ", ".join(sorted(missing_weights))
@@ -201,9 +225,11 @@ def prepare_mass_flow_inputs(mass_flows_lb_hr, molecular_weights_g_per_mol, rho_
     """Prepare model F and feed values from complete inlet mass flows.
 
     Every inlet stream in ``mass_flows_lb_hr`` contributes to total volumetric
-    flow, including impurities. Species with names in ``FEED_NAMES`` are used
-    by the dynamic balances; other species are converted and returned in the
-    feed mapping but are not otherwise modeled.
+    flow, including impurities. Volumetric flow is calculated as total lb/hr
+    divided by density in lb/ft^3, then multiplied by 28.316846592 L/ft^3 to
+    return F in L/hr. Species with names in ``FEED_NAMES`` are used by the
+    dynamic balances; other species are converted and returned in the feed
+    mapping but are not otherwise modeled.
     """
     if not np.isfinite(rho_lb_ft3) or rho_lb_ft3 <= 0.0:
         raise ValueError("rho_lb_ft3 must be finite and positive.")
@@ -292,6 +318,7 @@ def cozewith88(t, y, p):
         )
 
     y_internal = np.asarray(y, dtype=float).copy()
+    # Input live second moments are mol/m^3; equations use mol/L internally.
     y_internal[24:30] /= LITERS_PER_CUBIC_METER
 
     (
@@ -718,14 +745,14 @@ def cozewith88(t, y, p):
     #          + V sum_j R_Mj M_wj (-Delta H_RMj)
     #          + Q_mix] / (V Cp)
     #
-    # Here the component-wise forms of F(H_f-H) and Cp are assembled below:
+    # Here the component-wise forms of F(H_f-H) and the lumped Cp are assembled below:
     #   F * sum_i C_i,f (H_i,f - H_i)
-    #   Cp = sum_i C_i Cp_i, with Cp_i in cal/(mol degree Celsius)
+    #   Cp_mix = sum_i C_i * Cp_hexane, with Cp_hexane in cal/(mol degree Celsius)
     # The quotient gives degrees Celsius/hour; convert to the Fahrenheit state
     # basis with 9/5.
     #
     # The source also gives C_C6,f and C_C6 algebraically in A.52-A.53.
-    # The thermodynamic property functions/values (H_i, H_i,f, Cp_i,
+    # The thermodynamic property functions/values (H_i, H_i,f,
     # H_mix, rho, molecular weights, etc.) are not defined on the
     # supplied dynamic-model pages, so they are intentionally supplied
     # through p rather than invented here.
@@ -739,18 +766,17 @@ def cozewith88(t, y, p):
     else:
         # Required energy data/callables:
         #
-        # energy["F"]                      optional feed volumetric flow for
+        # energy["F"]                      optional feed flow in L/hr for
         #                                   F(H_f-H); otherwise p["F"] is used.
         # energy["Cfeed"]                  dict of feed concentrations
         # energy["Hfeed"]                  dict of feed enthalpies
         # energy["H"]                      dict/callable current enthalpies
-        # energy["Cp"]                     dict/callable heat capacities
         # energy["Mw"]                     dict of molecular weights in g/mol
         # energy["rho"]                    current mixture density in g/L
         # energy["rho_f"]                  feed density in g/L
         # energy["Hmix_cal_per_hr"]        total mixing heat rate, cal/hr
         # energy["minus_dH_cal_per_g"]     reaction heat releases, cal/g
-        # energy["Cp_poly"]                polymer heat capacity
+        # energy["Cpoly"]                  optional polymer concentration in mol/L
         #
         # The keys M1, M2, M3, C6, poly correspond to A.50-A.53.
 
@@ -758,7 +784,6 @@ def cozewith88(t, y, p):
         Cfeed = energy["Cfeed"]
         Hfeed = energy["Hfeed"]
         H = energy["H"]
-        Cp = energy["Cp"]
         Mw = energy["Mw"]
         rho = energy["rho"]
         rho_f = energy["rho_f"]
@@ -805,15 +830,15 @@ def cozewith88(t, y, p):
 
         # A.50 uses hourly heat rates and a molar basis for the thermal balance:
         #   - C_i are molar concentrations (mol/L)
-        #   - Cp_i are molar heat capacities (cal/mol/degree Celsius)
+        #   - All components use hexane's Cp in cal/(mol degree Celsius).
         #   - H_i and Hfeed are molar enthalpies (cal/mol)
         #   - RpropMj are propagation rates (mol/L/hr)
         #   - T is in degrees Fahrenheit and dT/dt is in degrees Fahrenheit/hr.
         #   - reaction heat releases are supplied as -DeltaH in cal/g.
-        # If any thermodynamic property is supplied on a mass basis, convert it
-        # with the molecular weight before combining with C_i and Cp_i.
-        # Sum_i C_i Cp_i in the denominator of A.50.
-        denom = sum(C[key] * Cp[key] for key in ["M1", "M2", "M3", "C6", "poly"])
+        # Apply the hexane molar heat capacity to the total modeled concentration.
+        # Reaction heat release remains species-specific in reaction_term below.
+        cp_hexane = heat_capacity_cal_mol_c_from_fahrenheit(T, Mw["C6"])
+        denom = sum(C.values()) * cp_hexane
 
         # Component-wise feed enthalpy, including the C6 solvent pseudo-component.
         feed_term = F_energy * sum(
@@ -835,6 +860,7 @@ def cozewith88(t, y, p):
             * 9.0 / 5.0
         )
 
+    # Return live second-moment derivatives in mol/m^3/hr, matching state units.
     d[24:30] *= LITERS_PER_CUBIC_METER
     return d
 
@@ -1071,8 +1097,8 @@ if __name__ == "__main__":
         "kx2": 1.0e-2,
         "kx3": 8.0e-3,
 
-        # Energy placeholders use the source units: Cp in cal/(mol C),
-        # reaction heat release in cal/g, and Hmix in cal/hr.
+        # Energy placeholders use the source units: reaction heat release in
+        # cal/g and Hmix in cal/hr. Mixture Cp is derived from hexane.
         "energy": {
             "Cfeed": {
                 "M1": 1.0e-2,
@@ -1093,14 +1119,6 @@ if __name__ == "__main__":
                 "M3": 0.5,
                 "C6": 0.5,
                 "poly": 0.5,
-            },
-            "Cp": {
-                # Placeholder values in cal/mol/degree Celsius.
-                "M1": 1.0e-1,
-                "M2": 1.8e-1,
-                "M3": 1.8e-1,
-                "C6": 1.8e-1,
-                "poly": 1.8e-1,
             },
             # Molecular weights in g/mol.
             "Mw": {
