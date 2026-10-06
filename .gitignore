@@ -1,0 +1,6 @@
+__pycache__/dashboard.cpython-314.pyc
+__pycache__/derivatives.cpython-314.pyc
+*.pyc
+*.csv
+*.json
+/__pycache__
