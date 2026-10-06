@@ -44,6 +44,10 @@ def render_page(data):
 
 def build(csv_path="results.csv", html_path="dashboard.html"):
     data = {"source": Path(csv_path).name, "columns": read_csv(csv_path)}
+    # The run inputs (molecular weights, ML constants, volume) fill in the equations.
+    config = Path(csv_path).with_name("results_config.json")
+    if config.exists():
+        data["config"] = json.loads(config.read_text(encoding="utf-8"))
     Path(html_path).write_text(render_page(data), encoding="utf-8")
     return html_path
 

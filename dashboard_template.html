@@ -217,6 +217,29 @@ h1 {
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: var(--text-xs); color: var(--ink-2); }
 .legend i { display: inline-block; width: 14px; height: 2px; border-radius: 1px; vertical-align: middle; margin-right: 6px; }
 .note { font-size: var(--text-xs); color: var(--muted); margin: 0; }
+.changes { padding-bottom: 14px; }
+.plot-events { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 0; padding: 0; list-style: none;
+  font-size: var(--text-sm); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.plot-events b { font-weight: 500; color: var(--muted); }
+.changes[data-pending="true"] { border-style: dashed; }
+.changes[data-pending="true"] .plot-events { color: var(--muted); }
+.eq-title { font-size: var(--text-sm); color: var(--muted); margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--ring); }
+.eq-title b { color: var(--ink); font-weight: 600; }
+.eq { display: grid; gap: 14px; }
+.eq-group h3 { font-size: var(--text-xs); font-weight: 600; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.06em; margin: 0 0 4px; }
+.eq-row { display: grid; grid-template-columns: 11em minmax(12em, 1.1fr) minmax(12em, 1.4fr) 9em; gap: 4px 16px;
+  align-items: baseline; padding: 6px 0; border-top: 1px solid var(--ring); font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums; }
+.eq-name { color: var(--ink-2); }
+.eq-formula { color: var(--ink); font-family: "Cambria Math", "STIX Two Math", Georgia, serif; font-size: 1.05em; }
+.eq-numbers { color: var(--muted); overflow-wrap: anywhere; }
+.eq-result { font-weight: 600; color: var(--ink); text-align: right; white-space: nowrap; }
+@media (max-width: 760px) {
+  .eq-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .eq-name { font-weight: 600; }
+  .eq-result { text-align: left; white-space: normal; }
+}
 .plot { position: relative; width: 100%; }
 .plot svg { display: block; width: 100%; overflow: visible; }
 .plot text { font-family: var(--font-ui); font-variant-numeric: tabular-nums; }
@@ -338,6 +361,8 @@ details.all summary span { font-weight: 400; color: var(--muted); font-size: var
 const DATA = /*__DATA__*/null;
 const tooltip = document.getElementById("tooltip");
 let teardown = null;
+// Set by mount(); the editor calls it with the form's config to preview step changes not run yet.
+let previewChanges = () => {};
 
 function mount(DATA, keepTime) {
   const app = document.getElementById("view");
@@ -439,6 +464,95 @@ function mount(DATA, keepTime) {
   // The inlet temperature is drawn on the temperature chart, not as % of start.
   const changingInputs = inputKeys.filter(key => key !== "T_i" && cols[key].some(v => v !== cols[key][0]));
   const COLORS = ["var(--s1)", "var(--s2)", "var(--s3)"];
+
+  // ---------------------------------------------------------------- equations with numbers (same formulas as model.py)
+  const P0 = DATA.config && DATA.config.p0;
+  const L_PER_FT3 = 28.316846592, G_PER_LB = 453.59237;
+  const MONO = [["M1", "Ethylene", "100"], ["M2", "Propylene", "010"], ["M3", "Diene", "001"]];
+  const SUB = { "0": "₀", "1": "₁", "2": "₂", "3": "₃" };
+  const subscript = str => str.replace(/[0-3]/g, c => SUB[c]);
+  const c = (key, k) => (cols[key] ? cols[key][k] : null);
+  const ok = (...vs) => vs.every(v => v !== null && v !== undefined && isFinite(v));
+  const nv = v => {
+    if (!ok(v)) return "–";
+    const a = Math.abs(v);
+    let out;
+    if (a >= 1e3 && a < 1e9) out = Math.round(v).toLocaleString("en-US");
+    else if (a !== 0 && (a < 1e-3 || a >= 1e9)) out = v.toExponential(3);
+    else out = trimNum(v.toPrecision(4));
+    return out.replace(/-/g, "−");
+  };
+  const paren = v => (ok(v) && v < 0 ? "(" + nv(v) + ")" : nv(v));
+  // p(k): p0 with parameter step changes applied (row N reuses p(N-1), as in results.csv).
+  const paramAt = (key, k) => {
+    if (!P0) return null;
+    k = Math.min(k, N - 1);
+    let v = P0[key];
+    for (const e of configEvents) {
+      if (e.target !== "p." + key || k < e.start || (e.end !== null && e.end !== undefined && k > e.end)) continue;
+      const val = e.values ? e.values[Math.min(k - e.start, e.values.length - 1)] : e.value;
+      v = e.mode === "multiply" ? v * val : val;
+    }
+    return v;
+  };
+  const lam = (mom, k) => ["P", "Q", "R", "B"].reduce((sum, x) => sum + (c(x + mom, k) || 0), 0);
+  const lam2 = (mom, k) => (c("L" + mom, k) || 0) + (c("B" + mom, k) || 0);
+  const P1m = k => c("polymer_conc", k);
+  const P2m = k => {
+    if (!P0) return ok(c("Mw", k), P1m(k)) ? c("Mw", k) * P1m(k) : null;
+    const m = P0.Mw, M = [m.M1, m.M2, m.M3];
+    return M[0] ** 2 * lam2("200", k) + M[1] ** 2 * lam2("020", k) + M[2] ** 2 * lam2("002", k)
+      + 2 * M[0] * M[1] * lam2("110", k) + 2 * M[0] * M[2] * lam2("101", k) + 2 * M[1] * M[2] * lam2("011", k);
+  };
+  const hexH = T => 0.5073 * T + 2.074e-4 * T ** 2 + 2.53e-7 * T ** 3;
+  const hexCp = T => 0.5073 + 4.148e-4 * T + 7.590e-7 * T ** 2;
+  const rhoAt = T => 3.804 / Math.pow(0.2641, 1 + Math.pow(1 - (T + 459.67) / 913.68, 0.27537));
+
+  // Each row: [what it is, formula, numbers plugged in, result].
+  const EQ = {
+    temp: k => {
+      const T = c("T", k), Ti = c("T_i", k), F = c("F", k), V = paramAt("V", k);
+      const fv = ok(F, V) ? F / 3600 / V : null;
+      const term = ok(fv, T, Ti) ? fv * (hexH(Ti) - hexH(T)) / hexCp(T) : null;
+      return [
+        ["Energy balance", "dT/dt = F/V·(H(Tᵢ) − H(T))/Cp + [Σ R_Mj·Mw_j·(−ΔH_j) + ΔH_mix/V]/(ρ·Cp)",
+          "", "T = " + nv(T) + " °F"],
+        ["Feed cooling term", "F/V · (H(Tᵢ) − H(T)) / Cp",
+          ok(T, Ti) ? nv(fv) + " × (" + nv(hexH(Ti)) + " − " + paren(hexH(T)) + ") / " + nv(hexCp(T)) : "–", nv(term) + " °F/s"],
+      ];
+    },
+    pr: k => [["Polymerization rate", "PR = F · P₁ᵐ",
+      nv(c("F", k)) + " ft³/hr × 28.32 L/ft³ × " + nv(P1m(k)) + " g/L ÷ 453.6 g/lb", nv(c("PR", k)) + " lb/hr"]],
+    mw: k => {
+      const lam0 = (c("live_chains", k) || 0) + (c("dead_chains", k) || 0);
+      return [
+        ["Number-average MW", "Mn = P₁ᵐ / λ₀", nv(P1m(k)) + " / " + nv(lam0), nv(c("Mn", k)) + " g/mol"],
+        ["Weight-average MW", "Mw = P₂ᵐ / P₁ᵐ", nv(P2m(k)) + " / " + nv(P1m(k)), nv(c("Mw", k)) + " g/mol"],
+      ];
+    },
+    pdi: k => [["Dispersity", "PDI = Mw / Mn", nv(c("Mw", k)) + " / " + nv(c("Mn", k)), nv(c("PDI", k))]],
+    comp: k => MONO.map(([key, name, mom], i) => [name + " in polymer",
+      "Mw" + subscript(String(i + 1)) + " · λ" + subscript(mom) + " / P₁ᵐ",
+      nv(P0 ? P0.Mw[key] : null) + " × " + nv(lam(mom, k)) + " / " + nv(P1m(k)),
+      nv(c(["wt_ethylene", "wt_propylene", "wt_diene"][i], k)) + " wt %"]),
+    conv: k => MONO.map(([key, name]) => {
+      const mw = P0 ? P0.Mw[key] : null, flow = c("flow_" + key, k);
+      const mf = ok(mw, flow) ? flow / mw * G_PER_LB / 3600 : null;
+      const F = ok(c("F", k)) ? c("F", k) * L_PER_FT3 / 3600 : null;
+      const conv = c("conv_" + key, k);
+      return [name + " conversion", "X = (m_f − F · C) / m_f",
+        "(" + nv(mf) + " − " + nv(F) + " × " + nv(c("C_" + key, k)) + ") / " + nv(mf), (ok(conv) ? nv(100 * conv) : "–") + " %"];
+    }),
+    ml: k => [["Mooney viscosity", "ML = (a + b · PDI) · Mw",
+      "(" + nv(P0 ? P0.ML_a : null) + " + " + nv(P0 ? P0.ML_b : null) + " × " + nv(c("PDI", k)) + ") × " + nv(c("Mw", k)), nv(c("ML", k))]],
+    chains: k => [["Polymer chains", "λ₀ = P₀ + Q₀ + R₀ + B₀",
+      nv(c("P0", k)) + " + " + nv(c("Q0", k)) + " + " + nv(c("R0", k)) + " + " + nv(c("B0", k)),
+      nv((c("live_chains", k) || 0) + (c("dead_chains", k) || 0)) + " mol/L"]],
+    inputs: k => {
+      const total = inputKeys.filter(key => key.startsWith("flow_")).reduce((sum, key) => sum + (c(key, k) || 0), 0);
+      return [["Outlet flow", "F = Σ Fᵢ / ρ(Tᵢ)", nv(total) + " lb/hr / " + nv(rhoAt(c("T_i", k))) + " lb/ft³", nv(c("F", k)) + " ft³/hr"]];
+    },
+  };
 
   const CHARTS = [
     { id: "temp", title: "Temperature", unit: "°F", zero: false,
@@ -553,6 +667,62 @@ function mount(DATA, keepTime) {
     cards.push(entry);
     return card;
   }
+  // Same labels the plots draw at each input change, listed once above the charts.
+  // In the editor, the list follows the form and says when it has not been run yet.
+  const runItems = events.map(e => ["t = " + fmtTime(t[e.k]), eventText(e)]);
+  const changesLabel = h("div", { class: "section-label" }, ["Changes during the run"]);
+  const changesList = h("ul", { class: "plot-events", "aria-label": "Step changes" });
+  const eqTitle = h("div", { class: "eq-title" });
+  const eqBox = h("div", { class: "eq" });
+  const changesPanel = h("section", { class: "card changes", "aria-label": "Changes during the run" }, [changesList, eqTitle, eqBox]);
+  const EQ_GROUPS = [
+    ["Reactor", ["inputs", "temp", "pr"]],
+    ["Molecular weight", ["mw", "pdi", "ml", "chains"]],
+    ["Composition and conversion", ["comp", "conv"]],
+  ];
+  const showEquations = k => {
+    eqTitle.replaceChildren("Equations at ", h("b", {}, ["t = " + fmtTime(t[k])]), " · step " + k + " · move the time slider to see other steps");
+    eqBox.replaceChildren(...EQ_GROUPS.map(([group, ids]) => h("div", { class: "eq-group" }, [
+      h("h3", {}, [group]),
+      ...ids.flatMap(id => EQ[id](k)).map(([name, formula, numbers, result]) => h("div", { class: "eq-row" }, [
+        h("span", { class: "eq-name" }, [name]),
+        h("span", { class: "eq-formula" }, [formula]),
+        h("span", { class: "eq-numbers" }, [numbers ? "= " + numbers : ""]),
+        h("span", { class: "eq-result" }, [result ? (result.includes("=") ? result : "= " + result) : ""]),
+      ])),
+    ])));
+  };
+  const showChanges = (items, pending) => {
+    changesLabel.textContent = pending ? "Changes in the form · not run yet" : "Changes during the run";
+    changesPanel.dataset.pending = pending ? "true" : "false";
+    changesList.replaceChildren(...(items.length
+      ? items.map(([when, text]) => h("li", {}, [h("b", {}, [when]), " ", text]))
+      : [h("li", {}, [pending ? "No step changes." : "No step changes in this run."])]));
+  };
+  // Text for each configured step change, used to tell whether the form differs from the run.
+  const configItems = cfg => {
+    if (!cfg || !Array.isArray(cfg.events)) return [];
+    const at = k => "t = " + fmtTime(k * cfg.dt);
+    const items = [];
+    for (const e of cfg.events) {
+      const target = String(e.target), isParam = target.startsWith("p.");
+      const name = isParam ? target.slice(2) : target === "T_i" ? "Inlet T" : (STREAM_SHORT[target.slice(5)] || target.slice(5)) + " feed";
+      const amount = e.values ? (e.mode === "multiply" ? " × " : " from ") + (e.source || "CSV")
+        : e.mode === "multiply" ? " ×" + fmt(e.value)
+        : (isParam ? " = " : " → ") + fmt(e.value) + (target === "T_i" ? " °F" : "");
+      items.push([e.start, at(e.start), name + amount]);
+      if (e.end !== null && e.end !== undefined) items.push([e.end + 1, at(e.end + 1), name + " back"]);
+    }
+    return items.sort((a, b) => a[0] - b[0]).map(([, when, text]) => [when, text]);
+  };
+  const runKey = JSON.stringify(configItems(DATA.config));
+  previewChanges = formCfg => {
+    const items = configItems(formCfg);
+    if (JSON.stringify(items) === runKey) showChanges(runItems, false);
+    else showChanges(items, true);
+  };
+  showChanges(runItems, false);
+  app.append(changesLabel, changesPanel);
   if (INPUT_CHART) {
     app.append(h("div", { class: "section-label" }, ["What changed"]));
     app.append(makeCard(INPUT_CHART));
@@ -621,6 +791,7 @@ function mount(DATA, keepTime) {
       const v = cols[key][sel];
       td.textContent = key.startsWith("conv_") && v !== null ? fmt(100 * v, 3) + " %" : fmt(v);
     }
+    showEquations(sel);
     drawAll();
   }
 
@@ -1108,6 +1279,7 @@ function initEditor(DATA) {
         else if (Number.isFinite(stop) && lastRow > stop) when.textContent += "; rows after step " + stop + " are not used";
       }
     }
+    previewChanges(JSON.parse(snapshot()));
     if (!busy) {
       const dirty = snapshot() !== lastRun;
       setStatus(dirty ? "Inputs changed. Run the simulation to update the charts." : "The charts show these inputs.", dirty ? "pending" : "ok");
@@ -1147,6 +1319,7 @@ function initEditor(DATA) {
         DATA.config = out.config;
         currentTime = mount(DATA, currentTime());
         lastRun = snapshot();
+        previewChanges(JSON.parse(snapshot()));
         message = ["Done in " + out.seconds.toFixed(1) + " s. results.csv and results_config.json are updated.", "ok"];
       }
     } catch (err) {
