@@ -29,6 +29,8 @@ hours debugging, optimizing, and adjusting the code to prevent errors like
 division by zero and to ensure that the model runs smoothly. This is an
 in-progress model.
 
+Revisions have been made using GPT-6 Luna.
+
 State order:
     0  T (degrees Fahrenheit)
   1  CM1
@@ -104,8 +106,10 @@ FEED_NAMES = [
 ]
 
 FT3_TO_L = 28.316846592
+LITERS_PER_CUBIC_METER = 1000.0
 BTU_TO_CAL = 252.164
 LB_TO_G = 453.59237
+LB_PER_FT3_TO_G_PER_L = LB_TO_G / FT3_TO_L
 SECONDS_PER_HOUR = 3600.0
 
 
@@ -116,10 +120,9 @@ def enthalpy_from_fahrenheit(T_f):
 
         H = 0.5073*T + 2.047e-4*T**2 + 2.53e-7*T**3
 
-    with T in degrees Fahrenheit and H in the source correlation's
-    ``Btu/16`` units. Convert the result to the molar enthalpy units used by
-    the energy balance before placing it in ``energy["H"]`` or
-    ``energy["Hfeed"]``.
+    with T in degrees Fahrenheit and H in Btu/lb. Convert to cal/mol by
+    multiplying by BTU_TO_CAL / LB_TO_G * molecular_weight_g_per_mol before
+    placing it in ``energy["H"]`` or ``energy["Hfeed"]``.
     """
     T_f = np.asarray(T_f, dtype=float)
     return (
@@ -136,9 +139,11 @@ def heat_capacity_from_fahrenheit(T_f):
 
         Cp = 0.5073 + 4.148e-4*T + 7.590e-7*T**2
 
-    with T in degrees Fahrenheit and Cp in the source correlation's
-    ``Btu/16`` units. Convert the result to cal/mol/degree Fahrenheit before
-    placing it in ``energy["Cp"]``.
+    with T in degrees Fahrenheit and Cp in Btu/(lb degree Fahrenheit).
+    Convert to cal/mol/degree Fahrenheit by multiplying by
+    BTU_TO_CAL / LB_TO_G * molecular_weight_g_per_mol. The energy balance
+    expects ``energy["Cp"]`` in cal/mol/degree Celsius, so multiply that
+    converted value by 9/5 before placing it there.
     """
     T_f = np.asarray(T_f, dtype=float)
     return 0.5073 + 4.148e-4 * T_f + 7.590e-7 * T_f**2
@@ -149,20 +154,72 @@ def stream_density_from_fahrenheit(T_f):
 
     The correlation is:
 
-        rho(T) = 3.804 / (1 + (1 - (T + 459.67) / 913.68)**0.27537)
+        P1 = 1 - (T + 459.67) / 913.68
+        P2 = 1 + P1**0.27537
+        rho(T) = (3.804 / 0.2641) * P2
 
-    with T in degrees Fahrenheit. The returned density has the source
-    correlation's density units; convert it to the units required by the
-    flow and energy-balance calculations before assigning ``rho`` or
-    ``rho_f``.
+    with T in degrees Fahrenheit and rho in lb/ft^3. Convert to g/L with
+    ``density_lb_ft3_to_g_l`` before assigning ``rho`` or ``rho_f`` in the
+    energy-balance inputs.
     """
     T_f = np.asarray(T_f, dtype=float)
-    return 3.804 / (1.0 + (1.0 - (T_f + 459.67) / 913.68) ** 0.27537)
+    P1 = 1.0 - (T_f + 459.67) / 913.68
+    P2 = 1.0 + P1**0.27537
+    return (3.804 / 0.2641) * P2
+
+
+def density_lb_ft3_to_g_l(rho_lb_ft3):
+    """Convert density from lb/ft^3 to g/L."""
+    return np.asarray(rho_lb_ft3, dtype=float) * LB_PER_FT3_TO_G_PER_L
 
 
 def _require_feed(feed):
     """Return all required mf_* feed rates, defaulting unspecified ones to 0."""
     return {name: feed.get(name, 0.0) for name in FEED_NAMES}
+
+
+def mass_flows_lb_hr_to_mol_hr(mass_flows_lb_hr, molecular_weights_g_per_mol):
+    """Convert external mass flows in lb/hr to molar flows in mol/hr."""
+    missing_weights = set(mass_flows_lb_hr) - set(molecular_weights_g_per_mol)
+    if missing_weights:
+        names = ", ".join(sorted(missing_weights))
+        raise ValueError(f"Missing molecular weights in g/mol for: {names}.")
+
+    converted_flows = {}
+    for name, mass_flow_lb_hr in mass_flows_lb_hr.items():
+        molecular_weight = molecular_weights_g_per_mol[name]
+        if not np.isfinite(molecular_weight) or molecular_weight <= 0.0:
+            raise ValueError(
+                f"Molecular weight for {name} must be finite and positive."
+            )
+        converted_flows[name] = mass_flow_lb_hr * LB_TO_G / molecular_weight
+
+    return converted_flows
+
+
+def prepare_mass_flow_inputs(mass_flows_lb_hr, molecular_weights_g_per_mol, rho_lb_ft3):
+    """Prepare model F and feed values from complete inlet mass flows.
+
+    Every inlet stream in ``mass_flows_lb_hr`` contributes to total volumetric
+    flow, including impurities. Species with names in ``FEED_NAMES`` are used
+    by the dynamic balances; other species are converted and returned in the
+    feed mapping but are not otherwise modeled.
+    """
+    if not np.isfinite(rho_lb_ft3) or rho_lb_ft3 <= 0.0:
+        raise ValueError("rho_lb_ft3 must be finite and positive.")
+
+    mass_flow_values = np.asarray(list(mass_flows_lb_hr.values()), dtype=float)
+    if not np.all(np.isfinite(mass_flow_values)) or np.any(mass_flow_values < 0.0):
+        raise ValueError("Inlet mass flows must be finite and nonnegative.")
+
+    total_mass_flow_lb_hr = float(np.sum(mass_flow_values))
+    F_L_hr = total_mass_flow_lb_hr / rho_lb_ft3 * FT3_TO_L
+    feed_mol_hr = mass_flows_lb_hr_to_mol_hr(
+        mass_flows_lb_hr,
+        molecular_weights_g_per_mol,
+    )
+
+    return {"F": F_L_hr, "feed": feed_mol_hr}
 
 
 def safe_initialize_state(y0=None, *, T0=300.0, min_value=1e-12):
@@ -200,20 +257,24 @@ def cozewith88(t, y, p):
     Parameters
     ----------
     t : float
-        Time.
+        Time in hours.
     y : array_like, length 36
-        State vector in STATE_NAMES order.
+        State vector in STATE_NAMES order. L200 through L011 are supplied in
+        mol/m^3 and converted internally to mol/L; other concentration states
+        use mol/L.
     p : dict
         Model parameters.
 
     Required p entries
     ------------------
     V, F
-        Reactor volume and outlet volumetric flow. If the available flow is
-        in lb/hr, convert it using the appropriate mixture density first.
+        Reactor volume in L and outlet volumetric flow in L/hr.
     feed : dict
-        Feed molar-flow inputs. For example:
+        Feed molar-flow inputs in mol/hr. For example:
             feed["M1"] = m_f,M1
+        Convert external mass flows in lb/hr with
+        ``mass_flows_lb_hr_to_mol_hr`` first. Inputs in klb/hr must be
+        multiplied by 1000 before conversion.
 
     kinetic constants appearing in A.54-A.85:
         ki1, ki2, ki3,
@@ -230,6 +291,9 @@ def cozewith88(t, y, p):
             f"received {len(y)}."
         )
 
+    y_internal = np.asarray(y, dtype=float).copy()
+    y_internal[24:30] /= LITERS_PER_CUBIC_METER
+
     (
         T,
         CM1, CM2, CM3, CC1, CC2, CH2, CAl,
@@ -240,7 +304,7 @@ def cozewith88(t, y, p):
         B100, B010, B001,
         L200, L020, L002, L110, L101, L011,
         B200, B020, B002, B110, B101, B011,
-    ) = y
+    ) = y_internal
 
     V = p["V"]
     F = p["F"]
@@ -281,7 +345,7 @@ def cozewith88(t, y, p):
 
     alkyl_ratio = CAl / CC1 - 1.0
 
-    S = (
+    termination_transfer_rate = (
         kt
         + kt2 * CM2
         + kt3 * CM3
@@ -326,6 +390,11 @@ def cozewith88(t, y, p):
 
     d[3] = mf["M3"] / V - F * CM3 / V - RM3
 
+    # Propagation-only monomer consumption rates used by the energy balance.
+    RpropM1 = (k11 * P0 + k21 * Q0 + k31 * R0) * CM1
+    RpropM2 = (k12 * P0 + k22 * Q0) * CM2
+    RpropM3 = k13 * P0 * CM3
+
     # A.57: inactive catalyst
     d[4] = (
         mf["C1"] / V
@@ -367,7 +436,7 @@ def cozewith88(t, y, p):
         + ki1 * CM1 * CC2
         + (k21 * Q0 + k31 * R0) * CM1
         - (k12 * CM2 + k13 * CM3) * P0
-        - S * P0
+        - termination_transfer_rate * P0
         - ktr * alkyl_ratio * (Q0 + R0)
     )
 
@@ -378,7 +447,7 @@ def cozewith88(t, y, p):
         + ki2 * CC2 * CM2
         + k12 * CM2 * P0
         - k21 * CM1 * Q0
-        - S * Q0
+        - termination_transfer_rate * Q0
         + ktrM2 * CM2 * (P0 + R0)
     )
 
@@ -388,14 +457,14 @@ def cozewith88(t, y, p):
         - F * R0 / V
         + ki3 * CM3 * P0
         - k31 * CM1 * R0
-        - S * R0
+        - termination_transfer_rate * R0
     )
 
     # A.64: dead chains
     d[11] = (
         mf["B0"] / V
         - F * B0 / V
-        + S * (P0 + Q0 + R0)
+        + termination_transfer_rate * (P0 + Q0 + R0)
     )
 
     # ---------------------------------------------------------------
@@ -410,7 +479,7 @@ def cozewith88(t, y, p):
         + (k11 * P0 + k21 * (Q0 + Q100)
            + k31 * (R0 + R100)) * CM1
         - (k12 * CM2 + k13 * CM3) * P100
-        - S * P100
+        - termination_transfer_rate * P100
         + ktr * alkyl_ratio * (P0 + Q0 + R0)
     )
 
@@ -421,7 +490,7 @@ def cozewith88(t, y, p):
         - (k12 * CM2 + k13 * CM3) * P010
         + k21 * CM1 * Q010
         + k31 * CM1 * R010
-        - S * P010
+        - termination_transfer_rate * P010
     )
 
     # A.67: diene in ethylene-ended chains
@@ -431,7 +500,7 @@ def cozewith88(t, y, p):
         - (k12 * CM2 + k13 * CM3) * P001
         + k21 * CM1 * Q001
         + k31 * CM1 * R001
-        - S * P001
+        - termination_transfer_rate * P001
     )
 
     # A.68: ethylene in propylene-ended chains
@@ -440,7 +509,7 @@ def cozewith88(t, y, p):
         - F * Q100 / V
         - k21 * CM1 * Q100
         + k12 * CM2 * P100
-        - S * Q100
+        - termination_transfer_rate * Q100
     )
 
     # A.69: propylene in propylene-ended chains
@@ -449,7 +518,7 @@ def cozewith88(t, y, p):
         - F * Q010 / V
         + (ki2 * CC2 + k12 * (P0 + P010) + k22 * Q0) * CM2
         - k21 * CM1 * Q010
-        - S * Q010
+        - termination_transfer_rate * Q010
         + ktrM2 * CM2 * (P0 + Q0 + R0)
     )
 
@@ -459,7 +528,7 @@ def cozewith88(t, y, p):
         - F * Q001 / V
         - k21 * CM1 * Q001
         + k12 * CM2 * P001
-        - S * Q001
+        - termination_transfer_rate * Q001
     )
 
     # A.71: ethylene in diene-ended chains
@@ -468,7 +537,7 @@ def cozewith88(t, y, p):
         - F * R100 / V
         + k13 * CM3 * P100
         - k31 * CM1 * R100
-        - S * R100
+        - termination_transfer_rate * R100
     )
 
     # A.72: propylene in diene-ended chains
@@ -477,7 +546,7 @@ def cozewith88(t, y, p):
         - F * R010 / V
         + k13 * CM3 * P010
         - k31 * CM1 * R010
-        - S * R010
+        - termination_transfer_rate * R010
     )
 
     # A.73: diene in diene-ended chains
@@ -486,7 +555,7 @@ def cozewith88(t, y, p):
         - F * R001 / V
         + k13 * CM3 * (P0 + P001)
         - k31 * CM1 * R001
-        - S * R001
+        - termination_transfer_rate * R001
     )
 
     # A.74: ethylene in dead chains
@@ -540,7 +609,7 @@ def cozewith88(t, y, p):
             + k31 * (R0 + 2 * R100)
         ) * CM1
         + ktr * alkyl_ratio * (P0 + Q0 + R0)
-        - S * L200
+        - termination_transfer_rate * L200
     )
 
     # A.78: live chains, propylene/propylene
@@ -551,7 +620,7 @@ def cozewith88(t, y, p):
         + k12 * (P0 + 2 * P010) * CM2
         + k22 * (Q0 + 2 * Q010) * CM2
         + ktrM2 * CM2 * (P0 + Q0 + R0)
-        - S * L020
+        - termination_transfer_rate * L020
     )
 
     # A.79: live chains, diene/diene
@@ -559,7 +628,7 @@ def cozewith88(t, y, p):
         mf["L002"] / V
         - F * L002 / V
         + k13 * CM3 * (P0 + 2 * P001)
-        - S * L002
+        - termination_transfer_rate * L002
     )
 
     # A.80: live chains, ethylene/propylene
@@ -568,7 +637,7 @@ def cozewith88(t, y, p):
         - F * L110 / V
         + (k11 * P010 + k21 * Q010 + k31 * R010) * CM1
         + (k12 * P100 + k22 * Q100) * CM2
-        - S * L110
+        - termination_transfer_rate * L110
     )
 
     # A.81: live chains, ethylene/diene
@@ -577,7 +646,7 @@ def cozewith88(t, y, p):
         - F * L101 / V
         + (k11 * P001 + k21 * Q001 + k31 * R001) * CM1
         + k13 * CM3 * P100
-        - S * L101
+        - termination_transfer_rate * L101
     )
 
     # A.82: live chains, propylene/diene
@@ -586,7 +655,7 @@ def cozewith88(t, y, p):
         - F * L011 / V
         + (k12 * P001 + k22 * Q001) * CM2
         + k13 * CM3 * P010
-        - S * L011
+        - termination_transfer_rate * L011
     )
 
     # ---------------------------------------------------------------
@@ -597,21 +666,21 @@ def cozewith88(t, y, p):
     d[30] = (
         mf["B200"] / V
         - F * B200 / V
-        + S * L200
+        + termination_transfer_rate * L200
     )
 
     # A.84: dead chains, propylene/propylene
     d[31] = (
         mf["B020"] / V
         - F * B020 / V
-        + S * L020
+        + termination_transfer_rate * L020
     )
 
     # A.85: dead chains, diene/diene
     d[32] = (
         mf["B002"] / V
         - F * B002 / V
-        + S * L002
+        + termination_transfer_rate * L002
     )
 
     # User-supplied dead-chain mixed second moments
@@ -619,21 +688,21 @@ def cozewith88(t, y, p):
     d[33] = (
         mf["B110"] / V
         - F * B110 / V
-        + S * L110
+        + termination_transfer_rate * L110
     )
 
     # B101: ethylene/diene
     d[34] = (
         mf["B101"] / V
         - F * B101 / V
-        + S * L101
+        + termination_transfer_rate * L101
     )
 
     # B011: propylene/diene
     d[35] = (
         mf["B011"] / V
         - F * B011 / V
-        + S * L011
+        + termination_transfer_rate * L011
     )
 
     # ---------------------------------------------------------------
@@ -643,15 +712,17 @@ def cozewith88(t, y, p):
     # The supplied derivation gives:
     #
     # The supplied derivation writes the mixing contribution as Delta H_mix/rho.
-    # Here Hmix_Btu_per_hr is explicitly a total heat rate, so its converted
-    # contribution is Q_mix directly, without another density division.
+    # Here Hmix_cal_per_hr is already a total heat rate, so its contribution is
+    # direct, without another density division or time-unit conversion.
     # dT/dt = [F(H_f - H)
     #          + V sum_j R_Mj M_wj (-Delta H_RMj)
     #          + Q_mix] / (V Cp)
     #
     # Here the component-wise forms of F(H_f-H) and Cp are assembled below:
     #   F * sum_i C_i,f (H_i,f - H_i)
-    #   Cp = sum_i C_i Cp_i
+    #   Cp = sum_i C_i Cp_i, with Cp_i in cal/(mol degree Celsius)
+    # The quotient gives degrees Celsius/hour; convert to the Fahrenheit state
+    # basis with 9/5.
     #
     # The source also gives C_C6,f and C_C6 algebraically in A.52-A.53.
     # The thermodynamic property functions/values (H_i, H_i,f, Cp_i,
@@ -674,11 +745,11 @@ def cozewith88(t, y, p):
         # energy["Hfeed"]                  dict of feed enthalpies
         # energy["H"]                      dict/callable current enthalpies
         # energy["Cp"]                     dict/callable heat capacities
-        # energy["Mw"]                     dict of molecular weights
-        # energy["rho"]                    current mixture density
-        # energy["rho_f"]                  feed density
-        # energy["Hmix_Btu_per_hr"]        total mixing heat rate, Btu/hr
-        # energy["Hmix"]                   legacy key for total Btu/hr
+        # energy["Mw"]                     dict of molecular weights in g/mol
+        # energy["rho"]                    current mixture density in g/L
+        # energy["rho_f"]                  feed density in g/L
+        # energy["Hmix_cal_per_hr"]        total mixing heat rate, cal/hr
+        # energy["minus_dH_cal_per_g"]     reaction heat releases, cal/g
         # energy["Cp_poly"]                polymer heat capacity
         #
         # The keys M1, M2, M3, C6, poly correspond to A.50-A.53.
@@ -691,10 +762,8 @@ def cozewith88(t, y, p):
         Mw = energy["Mw"]
         rho = energy["rho"]
         rho_f = energy["rho_f"]
-        Hmix_Btu_per_hr = energy.get(
-            "Hmix_Btu_per_hr", energy.get("Hmix", 0.0)
-        )
-        dH_Btu_per_lb = energy.get("dH_Btu_per_lb", energy.get("dH"))
+        Hmix_cal_per_hr = energy.get("Hmix_cal_per_hr", 0.0)
+        minus_dH_cal_per_g = energy["minus_dH_cal_per_g"]
 
         # A.52: pseudo-component C6 in the feed
         C_C6_f = (
@@ -704,7 +773,8 @@ def cozewith88(t, y, p):
                 + Mw["M2"] * Cfeed["M2"]
                 + Mw["M3"] * Cfeed["M3"]
             )
-        )
+        ) / Mw["C6"]
+        Cfeed_for_balance = {**Cfeed, "C6": C_C6_f}
 
         # A.53: pseudo-component C6 in the reactor.
         # lambda100, lambda010, lambda001 are the total first moments
@@ -723,7 +793,7 @@ def cozewith88(t, y, p):
                 + Mw["M2"] * lam010
                 + Mw["M3"] * lam001
             )
-        )
+        ) / Mw["C6"]
 
         C = {
             "M1": CM1,
@@ -733,13 +803,13 @@ def cozewith88(t, y, p):
             "poly": energy.get("Cpoly", 0.0),
         }
 
-        # A.50 uses a molar basis for the thermal balance:
+        # A.50 uses hourly heat rates and a molar basis for the thermal balance:
         #   - C_i are molar concentrations (mol/L)
-        #   - Cp_i are molar heat capacities (cal/mol/degree Fahrenheit)
+        #   - Cp_i are molar heat capacities (cal/mol/degree Celsius)
         #   - H_i and Hfeed are molar enthalpies (cal/mol)
-        #   - RMj are molar reaction rates (mol/L/s)
-        #   - T and dT/dt use degrees Fahrenheit and degrees Fahrenheit/s.
-        #   - reaction heats are supplied as Btu/lb and converted to cal/mol.
+        #   - RpropMj are propagation rates (mol/L/hr)
+        #   - T is in degrees Fahrenheit and dT/dt is in degrees Fahrenheit/hr.
+        #   - reaction heat releases are supplied as -DeltaH in cal/g.
         # If any thermodynamic property is supplied on a mass basis, convert it
         # with the molecular weight before combining with C_i and Cp_i.
         # Sum_i C_i Cp_i in the denominator of A.50.
@@ -747,26 +817,25 @@ def cozewith88(t, y, p):
 
         # Component-wise feed enthalpy, including the C6 solvent pseudo-component.
         feed_term = F_energy * sum(
-            Cfeed[key] * (Hfeed[key] - H[key])
+            Cfeed_for_balance[key] * (Hfeed[key] - H[key])
             for key in ["M1", "M2", "M3", "C6", "poly"]
         )
 
-        # Convert Btu/lb -> cal/g -> cal/mol before applying molar reaction rates.
-        dH_M1 = dH_Btu_per_lb["M1"] * BTU_TO_CAL / LB_TO_G * Mw["M1"]
-        dH_M2 = dH_Btu_per_lb["M2"] * BTU_TO_CAL / LB_TO_G * Mw["M2"]
-        dH_M3 = dH_Btu_per_lb["M3"] * BTU_TO_CAL / LB_TO_G * Mw["M3"]
-
         reaction_term = V * (
-            RM1 * (-dH_M1)
-            + RM2 * (-dH_M2)
-            + RM3 * (-dH_M3)
+            RpropM1 * Mw["M1"] * minus_dH_cal_per_g["M1"]
+            + RpropM2 * Mw["M2"] * minus_dH_cal_per_g["M2"]
+            + RpropM3 * Mw["M3"] * minus_dH_cal_per_g["M3"]
         )
 
-        # Hmix is a total heat rate, so convert Btu/hr directly to cal/s.
-        mixing_term = Hmix_Btu_per_hr * BTU_TO_CAL / SECONDS_PER_HOUR
+        # Feed, reaction, and mixing terms are all heat rates in cal/hr.
+        mixing_term = Hmix_cal_per_hr
 
-        d[0] = (feed_term + reaction_term + mixing_term) / (V * denom)
+        d[0] = (
+            (feed_term + reaction_term + mixing_term) / (V * denom)
+            * 9.0 / 5.0
+        )
 
+    d[24:30] *= LITERS_PER_CUBIC_METER
     return d
 
 
@@ -775,7 +844,7 @@ def integrate_model(params, y0, t_span, t_eval=None, **solve_kwargs):
     Convenience wrapper around scipy.integrate.odeint.
 
     The ODEINT interface is a good fit for this model because it accepts a full
-    time vector directly and keeps the usage simple for feed-sweep and short
+    time vector in hours directly and keeps the usage simple for feed-sweep and short
     exploratory runs.
     """
     y0 = np.asarray(y0, dtype=float)
@@ -1002,14 +1071,13 @@ if __name__ == "__main__":
         "kx2": 1.0e-2,
         "kx3": 8.0e-3,
 
-        # Reaction heats are supplied in Btu/lb; Hmix is a total Btu/hr rate.
-        # The energy balance converts both to its internal cal-based units.
+        # Energy placeholders use the source units: Cp in cal/(mol C),
+        # reaction heat release in cal/g, and Hmix in cal/hr.
         "energy": {
             "Cfeed": {
                 "M1": 1.0e-2,
                 "M2": 1.0e-2,
                 "M3": 1.0e-2,
-                "C6": 1.0e-2,
                 "poly": 1.0e-2,
             },
             "Hfeed": {
@@ -1027,13 +1095,14 @@ if __name__ == "__main__":
                 "poly": 0.5,
             },
             "Cp": {
-                # Placeholder values in cal/mol/degree Fahrenheit.
+                # Placeholder values in cal/mol/degree Celsius.
                 "M1": 1.0e-1,
-                "M2": 1.0e-1,
-                "M3": 1.0e-1,
-                "C6": 1.0e-1,
-                "poly": 1.0e-1,
+                "M2": 1.8e-1,
+                "M3": 1.8e-1,
+                "C6": 1.8e-1,
+                "poly": 1.8e-1,
             },
+            # Molecular weights in g/mol.
             "Mw": {
                 "M1": 28.0,
                 "M2": 42.0,
@@ -1041,13 +1110,13 @@ if __name__ == "__main__":
                 "C6": 86.0,
             },
             "rho": 1.0,
-            "rho_f": 1.0,
-            "Hmix_Btu_per_hr": 1.0e6,
+            "rho_f": 2.0,
+            "Hmix_cal_per_hr": 2.52164e8,
             "Cpoly": 0.0,
-            "dH_Btu_per_lb": {
-                "M1": 1400.0,
-                "M2": 950.0,
-                "M3": 700.0,
+            "minus_dH_cal_per_g": {
+                "M1": 778.2970423422245,
+                "M2": 528.1301358750809,
+                "M3": 389.14852117111224,
             },
         },
     }
@@ -1055,6 +1124,7 @@ if __name__ == "__main__":
     # Start from a numerically safe state: the model uses CAl/CC1 in the
     # kinetic bracket, so both concentrations must remain positive.
     y0 = np.full(36, 1e-3, dtype=float)
+    y0[24:30] = 1.0  # Equivalent to 1e-3 mol/L for live moments in mol/m^3.
     y0 = safe_initialize_state(y0, T0=40.0, min_value=1e-12)
     y0[4] = 1.0
     y0[7] = 0.5
