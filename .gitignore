@@ -4,3 +4,4 @@ __pycache__/derivatives.cpython-314.pyc
 *.csv
 *.json
 /__pycache__
+/__pycache/*
