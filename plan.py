@@ -34,7 +34,9 @@ Two layouts are accepted; the header row tells them apart.
    to cover it.
 
 Inputs are named as in results.csv or the dashboard: flow_M1 / flow.M1 / M1
-/ Ethylene, T_i, T0, V, H_mix, k11, Mw.M1, neg_dH.M1, ML_a, ML_b, N, dt.
+/ Ethylene, T_i, T0, V, H_mix, k11, Mw.M1, neg_dH.M1, ML_a, ML_b, N, dt,
+the Arrhenius data T_ref and E.k11, and starting concentrations C_M1 ...
+C_Al (or init.C_M1); the last three are starting values only.
 Text after a comma or bracket in a header is ignored, so "Ethylene, lb/hr"
 works.
 """
@@ -70,6 +72,12 @@ def resolve(name, p0):
         return ("run", "dt")
     if low in ("t_i", "ti", "inlet t", "inlet temperature"):
         return ("T_i",)
+    if low in ("t_ref", "tr", "t_r"):
+        return ("p", "T_ref")
+    m = re.fullmatch(r"(?:init[._]|x0[._]|initial\s+)?(c_(?:m[123]|c[12]|h2|al))", low)
+    if m:
+        key = "C_" + m.group(1)[2:].upper().replace("AL", "Al")
+        return ("x0", key)
     for prefix in ("flow.", "flow_"):
         if low.startswith(prefix):
             low = low[len(prefix):]
@@ -81,6 +89,12 @@ def resolve(name, p0):
     if m:
         group = "Mw" if m.group(1).lower() == "mw" else "neg_dH"
         return ("p_nested", group, m.group(2).upper())
+    m = re.fullmatch(r"E[._](k\w+)", key, flags=re.I)
+    if m:
+        k = next((k for k in p0 if k.lower() == m.group(1).lower() and k.startswith("k")), None)
+        if k is None:
+            raise ValueError(f"Unknown rate constant in {name!r}.")
+        return ("p_nested", "E", k)
     for k in p0:
         if k.lower() == key.lower() and not isinstance(p0[k], dict):
             return ("p", k)
@@ -121,8 +135,10 @@ def _set_start(cfg, where, value):
         cfg["u0"]["T_i"] = value
     elif where[0] == "p":
         cfg["p0"][where[1]] = value
+    elif where[0] == "x0":
+        cfg.setdefault("x0", {})[where[1]] = value
     else:
-        cfg["p0"][where[1]][where[2]] = value
+        cfg["p0"].setdefault(where[1], {})[where[2]] = value
 
 
 def _rows(text):

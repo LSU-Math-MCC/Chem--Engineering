@@ -73,8 +73,12 @@ config  ──►  build_inputs()  ──►  u(0..N-1), p(0..N-1), states(0)
   heats of reaction, heat of mixing, and the Mooney constants a and b. A step
   change can alter some of these too (V, ΔH_mix and the rate constants), for
   example to imitate catalyst decay.
-- **Starting state:** the reactor starts full of the feed mixture at temperature
-  T0, with no active catalyst or polymer yet.
+- **Starting state:** by default the reactor starts full of the feed mixture at
+  temperature T0, with no active catalyst or polymer yet. You can give any
+  species its own starting concentration under *Initial conditions*.
+- **Rate constants:** each one follows the Arrhenius equation
+  k = k₀·exp(−E·(1/T − 1/Tr)) at the current reactor temperature. Defaults
+  are E = 0 and Tr = 90 °F, which keeps every k constant.
 - **Feeds:** seven streams: ethylene (M1), propylene (M2), diene (M3), hexane
   solvent (C6), catalyst VCl₄ (fed in its inactive form), aluminum alkyl
   co-catalyst, and hydrogen.
@@ -90,7 +94,8 @@ A run is described by one JSON-style dict (see `DEFAULT_CONFIG` in `model.py`):
 |---|---|
 | `N`, `dt` | Number of steps and step length in seconds (default 150 × 10 s). |
 | `u0` | Starting inputs: `flows` (lb/hr per stream) and `T_i` (°F). |
-| `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants, `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`. |
+| `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants (k₀ at `T_ref`), `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`, and the Arrhenius data `T_ref` (°F) and `E` (°R, one per rate constant). |
+| `x0` | Starting concentrations (mol/L) by species, e.g. `{"C_M1": 0.5}`. Species left out start at the feed composition. |
 | `events` | Step changes applied on top of `u0`/`p0` (see below). |
 
 Each event has `start` and `end` (steps, where `end: null` means until the
@@ -103,8 +108,11 @@ end of the run), `target` (`flow.H2`, `T_i`, `p.k11` …), `mode` (`set` or
 
 `python dashboard_server.py` serves the editable version.
 
-- **Simulation inputs:** run length, starting feeds and inlet temperature, step
-  changes, and all parameters. **Run simulation** reruns the model and updates
+- **Simulation inputs:** run length, starting feeds and inlet temperature,
+  initial conditions (T0 and the starting concentrations; leave a box blank to
+  use the feed composition, shown in grey), step changes, and all parameters.
+  Each rate constant has an **E** box next to it, and the Arrhenius section has
+  **Tr**. **Run simulation** reruns the model and updates
   `results.csv` and `results_config.json`. **Load plan CSV…** fills the whole
   form from a plan file.
 - **Time slider and summary tiles:** pick any step. The tiles, the equations and
@@ -166,7 +174,20 @@ Any of these work: `flow_M1`, `flow.M1`, `M1`, `Ethylene`, `Ethylene, lb/hr`
 Propylene / M2, Diene / M3, Hexane / C6, Catalyst / cat, Aluminum / Al and
 Hydrogen / H2. The other inputs are `T_i`, `T0`, `V`, `H_mix`, the rate constants
 (`k11`, `k_tr1` …), `Mw.M1`–`Mw.M3`, `neg_dH.M1`–`neg_dH.M3`, `ML_a`, `ML_b`,
-`N` and `dt`.
+`N` and `dt`. The list layout can also set:
+
+- **Arrhenius data:** `T_ref` (or `Tr`) and `E.k11`, `E.k_tr1` …
+- **Starting concentrations:** `C_M1` … `C_Al` (or `init.C_M1`).
+
+These are starting values only, so they can't be step changes:
+
+```csv
+input,value
+Tr,90
+E.k11,3000
+C_M1,0.5
+T0,100
+```
 
 A mistake in the file gives an error naming the row, for example
 `plan.csv row 4 (H2): change must be 'set' or 'multiply'`.
