@@ -190,7 +190,12 @@ def derivatives(t, y, p, feed=None):
     # Transfer-to-alkyl term: regenerates a P-type (M1-ended) center, so it
     # is excluded from P0's own death bracket (A.61) but shows up as a gain
     # term there from Q0/R0, and as a full loss term everywhere else.
-    term_Al = k_tr * (C_Al / C_C1 - 1.0)
+    CC1_Critical = 0.1
+    if C_C1 < CC1_Critical:
+        alkyl_ratio = ((C_Al - C_C1)/CC1_Critical**2)*(6*C_C1 - (8/CC1_Critical)*C_C1**2 + (3/CC1_Critical**2)*C_C1**3)
+    else:
+        alkyl_ratio = C_Al / C_C1 - 1.0
+    term_Al = k_tr * alkyl_ratio
     # Transfer-to-M2 term: regenerates a Q-type (M2-ended) center, so it is
     # excluded from Q0's own death bracket (A.62) but appears elsewhere.
     term_M2tr = k_trM2 * C_M2

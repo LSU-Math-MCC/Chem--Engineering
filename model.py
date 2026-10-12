@@ -108,7 +108,7 @@ def operating_point(u, p):
 
 def der(t, states, u, p):
     """dstates/dt for inputs u and parameters p (derivation A.54-A.82+)."""
-    if states[STATE_VARS.index("C_C1")] <= 0.0:
+    if states[STATE_VARS.index("C_C1")] < 0.0:
         raise ValueError("C_C1 must stay positive: the model contains C_Al/C_C1.")
     T = states[STATE_VARS.index("T")]
     if not T_RANGE[0] < T < T_RANGE[1]:
@@ -367,7 +367,7 @@ def _validate(cfg):
             raise ValueError(f"Unknown feed stream {key!r}.")
     for key in STREAM_KEYS:
         flows[key] = _number(flows.get(key), f"Feed flow {key}", positive=True)
-    if flows["cat"] <= 0.0:
+    if flows["cat"] < 0.0:
         raise ValueError("Catalyst flow must be above zero: the model divides by C_C1.")
     if sum(flows.values()) <= 0.0:
         raise ValueError("The total feed flow must be above zero.")
@@ -397,7 +397,7 @@ def _validate(cfg):
         if key not in INITIAL_KEYS:
             raise ValueError(f"Unknown starting concentration {key!r}; use one of {', '.join(INITIAL_KEYS)}.")
         x0[key] = _number(x0[key], f"Starting concentration {key}", positive=True)
-    if x0.get("C_C1", 1.0) <= 0.0:
+    if x0.get("C_C1", 1.0) < 0.0:
         raise ValueError("Starting C_C1 must be above zero: the model divides by C_C1.")
     cfg["x0"] = x0
 

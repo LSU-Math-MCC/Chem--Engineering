@@ -369,9 +369,9 @@ def cozewith88(t, y, p):
         raise ZeroDivisionError(
             "CC1 reached zero; the model contains CAl/CC1."
         )
-    CC1_Critical = 0.01
+    CC1_Critical = 0.1
     if CC1 < CC1_Critical:
-        alkyl_ratio = ((CAl - CC1)/CC1_Critical)*(6*CC1 - (8/CC1_Critical)*CC1^2 + (3/CC1_Critical^2)*CC1^3)
+        alkyl_ratio = ((CAl - CC1)/CC1_Critical**2)*(6*CC1 - (8/CC1_Critical)*CC1**2 + (3/CC1_Critical**2)*CC1**3)
     else:
         alkyl_ratio = CAl / CC1 - 1.0
 
