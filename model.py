@@ -26,7 +26,10 @@ lb/hr and ft3 inputs; temperatures stay in deg F.
 """
 
 import csv
+import importlib.util
+import re
 from copy import deepcopy
+from pathlib import Path
 
 import numpy as np
 from scipy.integrate import solve_ivp
@@ -313,6 +316,9 @@ DEFAULT_CONFIG = {
     # Starting concentrations (mol/L) by species, e.g. {"C_M1": 0.5};
     # species left out start at the feed composition.
     "x0": {},
+    # Closed loop: name of a file in controllers/ whose control(obs) picks
+    # u(k) every step (see Reactor below); None = open loop, u(k) from events.
+    "controller": None,
     "events": [
         # hydrogen feed tripled -> shorter chains
         {"start": 50, "end": None, "target": "flow.H2", "mode": "multiply", "value": 3.0},
@@ -428,6 +434,16 @@ def _validate(cfg):
                 raise ValueError(f"{label}: end step is before the start step.")
         else:
             e["end"] = None
+
+    name = cfg.get("controller") or None
+    if name is not None:
+        name = str(name).strip()
+        if name.endswith(".py"):
+            name = name[:-3]
+        if name not in list_controllers():
+            raise ValueError(f"Unknown controller {name!r}: put {name}.py in the controllers folder "
+                             f"(available: {', '.join(list_controllers()) or 'none'}).")
+    cfg["controller"] = name
     return cfg
 
 
@@ -453,22 +469,24 @@ def _apply(event, u, p, k):
     holder[key] = old * value if event["mode"] == "multiply" else value
 
 
-def build_inputs(config=DEFAULT_CONFIG):
-    """Turn a run config into (x0, U, P, dt) for simulate()."""
-    cfg = validate_config(config)
+def planned_inputs(cfg, k):
+    """(u(k), p(k)) from u0/p0 plus the step changes active at step k.
+
+    cfg must already be validated. In closed loop this is the *planned* input
+    the controller sees; it may override it.
+    """
+    u, p = deepcopy(cfg["u0"]), deepcopy(cfg["p0"])
+    for e in cfg["events"]:
+        if e["start"] <= k and (e["end"] is None or k <= e["end"]):
+            _apply(e, u, p, k)
+    if not T_RANGE[0] < u["T_i"] < T_RANGE[1]:
+        raise ValueError(f"Inlet temperature leaves the {T_RANGE[0]:.0f} to {T_RANGE[1]:.0f} deg F range at step {k}.")
+    return u, p
+
+
+def initial_state(cfg):
+    """states(0) for a validated cfg."""
     u0, p0 = cfg["u0"], cfg["p0"]
-
-    U, P = [], []
-    for k in range(cfg["N"]):
-        u, p = deepcopy(u0), deepcopy(p0)
-        for e in cfg["events"]:
-            if e["start"] <= k and (e["end"] is None or k <= e["end"]):
-                _apply(e, u, p, k)
-        if not T_RANGE[0] < u["T_i"] < T_RANGE[1]:
-            raise ValueError(f"Inlet temperature leaves the {T_RANGE[0]:.0f} to {T_RANGE[1]:.0f} deg F range at step {k}.")
-        U.append(u)
-        P.append(p)
-
     # Reactor initially full of the feed mixture, no catalyst or polymer yet,
     # at the starting reactor temperature T0; cfg["x0"] overrides any species.
     F, feed, _ = operating_point(u0, p0)
@@ -478,15 +496,176 @@ def build_inputs(config=DEFAULT_CONFIG):
     for state, value in cfg["x0"].items():
         x0[STATE_VARS.index(state)] = value
     x0[STATE_VARS.index("T")] = p0["T0"]
-    return x0, U, P, cfg["dt"]
+    return x0
 
 
-def run(config=DEFAULT_CONFIG, csv_path="results.csv"):
-    """Build inputs from config, simulate, and write the CSV."""
-    x0, U, P, dt = build_inputs(config)
-    t, X = simulate(x0, U, P, dt)
-    write_csv(csv_path, t, X, U, P)
-    return t, X, U, P
+def build_inputs(config=DEFAULT_CONFIG):
+    """Turn a run config into (x0, U, P, dt) for simulate() (open loop)."""
+    cfg = validate_config(config)
+    U, P = [], []
+    for k in range(cfg["N"]):
+        u, p = planned_inputs(cfg, k)
+        U.append(u)
+        P.append(p)
+    return initial_state(cfg), U, P, cfg["dt"]
+
+
+# ---------------------------------------------------------------------------
+# Closed loop: outside code decides u(k) at every step
+# ---------------------------------------------------------------------------
+
+CONTROLLER_DIR = Path(__file__).with_name("controllers")
+_CONTROLLER_NAME = re.compile(r"[A-Za-z0-9_]+")
+
+
+def list_controllers():
+    """Names of the controller files in controllers/ (without .py)."""
+    if not CONTROLLER_DIR.is_dir():
+        return []
+    return sorted(f.stem for f in CONTROLLER_DIR.glob("*.py")
+                  if _CONTROLLER_NAME.fullmatch(f.stem) and not f.stem.startswith("_"))
+
+
+def load_controller(name):
+    """(control, reset) from controllers/<name>.py. The file is loaded fresh
+    for every run, so edits are picked up and module state starts clean."""
+    if not _CONTROLLER_NAME.fullmatch(str(name)) or name not in list_controllers():
+        raise ValueError(f"Unknown controller {name!r}.")
+    path = CONTROLLER_DIR / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"controllers.{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    if not callable(getattr(module, "control", None)):
+        raise ValueError(f"controllers/{name}.py has no control(obs) function.")
+    return module.control, getattr(module, "reset", None)
+
+
+def merge_inputs(planned, override, k):
+    """u(k) = the planned inputs with a controller's override on top.
+
+    override: None (keep the plan) or a dict with any of
+        "flows": {stream: lb/hr, ...}   (any subset of STREAM_KEYS)
+        "T_i":   inlet temperature, deg F
+    """
+    u = deepcopy(planned)
+    if override is None:
+        return u
+    if not isinstance(override, dict):
+        raise ValueError(f"Step {k}: the controller must return a dict or None, not {type(override).__name__}.")
+    unknown = set(override) - {"flows", "T_i"}
+    if unknown:
+        raise ValueError(f"Step {k}: the controller returned unknown input(s) {sorted(unknown)}; use 'flows' and 'T_i'.")
+    for key, value in (override.get("flows") or {}).items():
+        if key not in STREAM_KEYS:
+            raise ValueError(f"Step {k}: unknown feed stream {key!r} from the controller; use {', '.join(STREAM_KEYS)}.")
+        u["flows"][key] = _number(value, f"Step {k}: controller feed flow {key}", positive=True)
+    if "T_i" in override:
+        u["T_i"] = _number(override["T_i"], f"Step {k}: controller inlet temperature T_i")
+        if not T_RANGE[0] < u["T_i"] < T_RANGE[1]:
+            raise ValueError(f"Step {k}: controller inlet temperature {u['T_i']:g} deg F is outside "
+                             f"{T_RANGE[0]:.0f} to {T_RANGE[1]:.0f} deg F.")
+    if sum(u["flows"].values()) <= 0.0:
+        raise ValueError(f"Step {k}: the controller set the total feed flow to zero.")
+    return u
+
+
+class Reactor:
+    """The simulation one step at a time, so outside code can decide u(k).
+
+        sim = Reactor(config)
+        while not sim.done:
+            obs = sim.observe()        # what the reactor looks like now
+            sim.step(my_logic(obs))    # u(k) override, or None for the plan
+        sim.write_csv("results.csv")
+
+    observe() returns a dict:
+        k, t, dt, N   step number, time (s), step length, total steps
+        state         {state name: value} at t_k (concentrations, moments, T)
+        props         polymer properties at t_k (Mn, Mw, PDI, PR, ML, wt_*,
+                      conv_*, ...), as in results.csv
+        u_planned     u(k) from u0 + step changes: {"flows": {...}, "T_i": ...}
+        u_prev        u(k-1) actually applied (None at k = 0)
+        p             parameters p(k) (read only; changes are ignored)
+    Everything in obs is a copy, so the caller may change it freely.
+    """
+
+    def __init__(self, config=DEFAULT_CONFIG):
+        self.config = validate_config(config)
+        self.N, self.dt = self.config["N"], self.config["dt"]
+        self.k = 0
+        self.t = [0.0]
+        self.X = [initial_state(self.config)]
+        self.U, self.P = [], []
+
+    @property
+    def done(self):
+        return self.k >= self.N
+
+    @property
+    def state(self):
+        return dict(zip(STATE_VARS, self.X[-1]))
+
+    def observe(self):
+        k = min(self.k, self.N - 1)
+        u_planned, p = planned_inputs(self.config, k)
+        # Properties at t_k use the inputs that produced this state (u(k-1)),
+        # falling back to the plan before the first step.
+        u_now = self.U[-1] if self.U else u_planned
+        return {
+            "k": self.k, "t": self.t[-1], "dt": self.dt, "N": self.N,
+            "state": self.state,
+            "props": properties(self.X[-1], u_now, p),
+            "u_planned": u_planned,
+            "u_prev": deepcopy(self.U[-1]) if self.U else None,
+            "p": p,
+        }
+
+    def step(self, u=None):
+        """Apply u(k) (None = planned inputs) over one step dt; return states(k+1)."""
+        if self.done:
+            raise RuntimeError(f"The run is finished ({self.N} steps).")
+        u_planned, p = planned_inputs(self.config, self.k)
+        u_applied = merge_inputs(u_planned, u, self.k)
+        x = move(self.X[-1], u_applied, p, self.dt, t=self.t[-1])
+        self.X.append(x)
+        self.t.append(self.t[-1] + self.dt)
+        self.U.append(u_applied)
+        self.P.append(p)
+        self.k += 1
+        return x
+
+    def results(self):
+        """(t, X, U, P) like run(): U and P are the inputs actually applied."""
+        return np.array(self.t), np.array(self.X), self.U, self.P
+
+    def write_csv(self, path="results.csv"):
+        write_csv(path, *self.results())
+
+
+def run(config=DEFAULT_CONFIG, csv_path="results.csv", controller=None):
+    """Simulate and write the CSV. Returns (t, X, U, P).
+
+    controller: None to use config["controller"] (a file in controllers/), or
+    a function control(obs) -> u override or None, called every step. With
+    neither, the run is open loop: u(k) comes from u0 and the step changes.
+    """
+    cfg = validate_config(config)
+    reset = None
+    if controller is None and cfg["controller"]:
+        controller, reset = load_controller(cfg["controller"])
+    if controller is None:
+        x0, U, P, dt = build_inputs(cfg)
+        t, X = simulate(x0, U, P, dt)
+        write_csv(csv_path, t, X, U, P)
+        return t, X, U, P
+
+    if reset is not None:
+        reset(deepcopy(cfg))
+    sim = Reactor(cfg)
+    while not sim.done:
+        sim.step(controller(sim.observe()))
+    sim.write_csv(csv_path)
+    return sim.results()
 
 
 def example_inputs():
@@ -502,13 +681,27 @@ if __name__ == "__main__":
 
     from plan import load_plan
 
-    # python model.py [plan.csv]: run the default inputs, or a plan CSV on top of them.
+    # python model.py [--controller NAME] [plan.csv]: the default inputs, or a
+    # plan CSV on top of them; --controller closes the loop with controllers/NAME.py.
+    args = sys.argv[1:]
+    controller_name = None
+    if "--controller" in args:
+        i = args.index("--controller")
+        if i + 1 >= len(args):
+            sys.exit("--controller needs a name, e.g. --controller hold_plan")
+        controller_name = args[i + 1]
+        del args[i:i + 2]
     config = DEFAULT_CONFIG
-    if len(sys.argv) > 1:
-        plan_path = Path(sys.argv[1])
+    if args:
+        plan_path = Path(args[0])
         config, summary = load_plan(plan_path.read_text(encoding="utf-8-sig"), DEFAULT_CONFIG, plan_path.name)
         config = validate_config(config)
         print(f"Plan {plan_path.name}: {summary}")
+    if controller_name:
+        config = dict(validate_config(config), controller=controller_name)
+    config = validate_config(config)
+    if config["controller"]:
+        print(f"Closed loop: controllers/{config['controller']}.py decides u(k) every step")
     t, X, U, P = run(config, "results.csv")
     Path("results_config.json").write_text(json.dumps(validate_config(config), indent=2), encoding="utf-8")
     last = properties(X[-1], U[-1], P[-1])

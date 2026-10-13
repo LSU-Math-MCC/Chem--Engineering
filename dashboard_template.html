@@ -170,7 +170,8 @@ h1 {
 /* Readouts */
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  /* 8 tiles: 4 or 2 per row, so no row is left part-empty. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   background: var(--grid);
   border: 1px solid var(--grid);
@@ -236,6 +237,7 @@ h1 {
 .eq-numbers { color: var(--muted); overflow-wrap: anywhere; }
 .eq-result { font-weight: 600; color: var(--ink); text-align: right; white-space: nowrap; }
 @media (max-width: 760px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .eq-row { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .eq-name { font-weight: 600; }
   .eq-result { text-align: left; white-space: normal; }
@@ -407,13 +409,18 @@ function mount(DATA, keepTime) {
     const last = e.end === null || e.end === undefined ? N : Math.min(e.end, N);
     for (let k = e.start + 1; k <= last; k++) covered.add(columnOf(e.target) + "@" + k);
   }
-  for (let k = 1; k <= N; k++) {
-    const changes = [];
-    for (const key of inputKeys) {
-      const a = cols[key][k - 1], b = cols[key][k];
-      if (a !== b && !covered.has(key + "@" + k)) changes.push({ key, a, b });
+  // Closed loop: the controller may move the inputs every step, so the input
+  // columns are not scanned for changes; one label marks the controller instead.
+  const controllerName = DATA.config && DATA.config.controller;
+  if (!controllerName) {
+    for (let k = 1; k <= N; k++) {
+      const changes = [];
+      for (const key of inputKeys) {
+        const a = cols[key][k - 1], b = cols[key][k];
+        if (a !== b && !covered.has(key + "@" + k)) changes.push({ key, a, b });
+      }
+      if (changes.length) events.push({ k, changes });
     }
-    if (changes.length) events.push({ k, changes });
   }
   const mark = (k, text) => {
     if (k < 1 || k > N) return;
@@ -429,8 +436,11 @@ function mount(DATA, keepTime) {
     if (e.values) mark(e.start, name + (e.mode === "multiply" ? " × " : " from ") + e.source);
     // Parameter step changes live only in the run config, not in the CSV.
     else if (isParam) mark(e.start, name + (e.mode === "multiply" ? " ×" + e.value : " = " + e.value));
-    if (isParam && e.end !== null && e.end !== undefined && e.end + 1 <= N) mark(e.end + 1, name + " back");
+    // In closed loop the planned input changes are what the controller is given, not what was applied.
+    else if (controllerName) mark(e.start, name + (e.mode === "multiply" ? " ×" + e.value : " → " + e.value) + " (planned)");
+    if ((isParam || controllerName) && e.end !== null && e.end !== undefined && e.end + 1 <= N) mark(e.end + 1, name + " back");
   }
+  if (controllerName) events.push({ k: 0, changes: [{ text: "Controller: " + controllerName }] });
   events.sort((a, b) => a.k - b.k);
   const ratioText = c => {
     if (c.key === "T_i") return "→ " + fmt(c.b) + " °F";
@@ -720,7 +730,7 @@ function mount(DATA, keepTime) {
   const configItems = cfg => {
     if (!cfg || !Array.isArray(cfg.events)) return [];
     const at = k => "t = " + fmtTime(k * cfg.dt);
-    const items = [];
+    const items = cfg.controller ? [[0, at(0), "Controller: " + cfg.controller]] : [];
     for (const e of cfg.events) {
       const target = String(e.target), isParam = target.startsWith("p.");
       const name = isParam ? target.slice(2) : target === "T_i" ? "Inlet T" : (STREAM_SHORT[target.slice(5)] || target.slice(5)) + " feed";
@@ -790,7 +800,8 @@ function mount(DATA, keepTime) {
     TILES.forEach(([key, , , get], i) => {
       const v = get(sel);
       const el = tileEls[i];
-      el.value.replaceChildren(fmt(v, key === "PDI" ? 3 : 4), ...(el.unit ? [h("small", {}, [el.unit])] : []));
+      // PDI keeps 3 decimals: rounding 1.997 to "2" hides how close to 2 it is.
+      el.value.replaceChildren(key === "PDI" && v !== null && isFinite(v) ? v.toFixed(3) : fmt(v, 4), ...(el.unit ? [h("small", {}, [el.unit])] : []));
       const prev = sel > 0 ? get(sel - 1) : null;
       if (key === "T" && v !== null && prev !== null) {
         const d = v - prev;
@@ -1107,6 +1118,15 @@ function initEditor(DATA) {
       h("p", { class: "hint", id: "flow-note" }),
     ]);
 
+    const controllerSelect = h("select", { id: "in-controller" }, [h("option", { value: "" }, ["None (open loop)"])]
+      .concat((DATA.controllers || []).map(name => h("option", { value: name }, [name]))));
+    controllerSelect.value = cfg.controller && (DATA.controllers || []).includes(cfg.controller) ? cfg.controller : "";
+    const loop = h("fieldset", { class: "fs" }, [
+      h("legend", {}, ["Closed-loop controller"]),
+      h("p", { class: "hint" }, ["A controller is a file in the controllers folder. Every step, its control(obs) sees the reactor state and properties and can set any feed flow and the inlet temperature. Step changes become the planned inputs it is given. See controllers/hold_plan.py."]),
+      h("label", { class: "field", for: "in-controller" }, [h("span", {}, ["Controller"]), controllerSelect]),
+    ]);
+
     const init = h("fieldset", { class: "fs" }, [
       h("legend", {}, ["Initial conditions, t = 0"]),
       h("p", { class: "hint" }, ["Reactor contents at the start, mol/L. Leave a box blank to start at the feed composition (the reactor full of feed); the grey number is that value. Polymer moments start at zero."]),
@@ -1263,7 +1283,7 @@ function initEditor(DATA) {
 
     const actions = h("div", { class: "actions" }, [runBtn, planBtn, planInput, resetBtn, csvLink, status]);
     form.replaceChildren(
-      h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base, init]), h("div", { class: "col" }, [steps])]),
+      h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base, init]), h("div", { class: "col" }, [loop, steps])]),
       params, actions,
     );
     refresh();
@@ -1281,6 +1301,7 @@ function initEditor(DATA) {
         T_ref: num("in-p-T_ref"), E: {}, CC1_crit: num("in-p-CC1_crit"),
       },
       x0: {},
+      controller: val("in-controller") || null,
       events: [],
     };
     for (const [k] of INIT) if (val("in-x0-" + k) !== "") cfg.x0[k] = num("in-x0-" + k);

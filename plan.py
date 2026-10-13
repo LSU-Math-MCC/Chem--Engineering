@@ -35,8 +35,9 @@ Two layouts are accepted; the header row tells them apart.
 
 Inputs are named as in results.csv or the dashboard: flow_M1 / flow.M1 / M1
 / Ethylene, T_i, T0, V, H_mix, k11, Mw.M1, neg_dH.M1, ML_a, ML_b, N, dt,
-the Arrhenius data T_ref and E.k11, and starting concentrations C_M1 ...
-C_Al (or init.C_M1); the last three are starting values only.
+the Arrhenius data T_ref and E.k11, starting concentrations C_M1 ...
+C_Al (or init.C_M1), and controller (a file name in controllers/, or none);
+the last four are starting values only.
 Text after a comma or bracket in a header is ignored, so "Ethylene, lb/hr"
 works.
 """
@@ -70,6 +71,8 @@ def resolve(name, p0):
         return ("run", "N")
     if low in ("dt", "step size"):
         return ("run", "dt")
+    if low == "controller":
+        return ("run", "controller")
     if low in ("t_i", "ti", "inlet t", "inlet temperature"):
         return ("T_i",)
     if low in ("t_ref", "tr", "t_r"):
@@ -177,7 +180,9 @@ def _load_list(cfg, low, rows, source):
         what = f"{source} row {i} ({name})"
         start = get(r, "start")
         if start == "":
-            _set_start(cfg, where, _num(value, what))
+            # The controller is a name (a file in controllers/), not a number; blank or "none" = open loop.
+            text_value = where == ("run", "controller")
+            _set_start(cfg, where, (value if value.lower() != "none" else None) if text_value else _num(value, what))
             starts += 1
             continue
         mode = (get(r, "change") or "set").lower()

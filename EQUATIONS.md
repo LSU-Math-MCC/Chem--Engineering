@@ -93,6 +93,11 @@ aluminum alkyl 120.56 and H₂ 2.
 
 $$\tau = \frac{V}{F} \times 60 \quad [\text{min}], \quad V \text{ in ft}^3,\ F \text{ in ft}^3/\text{hr}$$
 
+**Where u(k) comes from.** In open loop, the inputs come from the starting
+inputs and the step changes. In closed loop, a controller sets them at every
+step from the current state; see README, *Closed-loop control*. Either way they
+are held constant over each step, and the equations below are unchanged.
+
 **Starting state.** By default, the reactor is full of feed, so
 $C_X(0) = m_{f,X}/F$ for the fed species and $T(0) = T_0$. Everything else
 (active catalyst and all moments) starts at 0. Any species concentration

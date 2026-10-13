@@ -79,5 +79,6 @@
     "C_H2": 0.0,
     "C_Al": 0.0
   },
+  "controller": "example_pi_temperature",
   "events": []
 }

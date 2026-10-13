@@ -43,6 +43,7 @@ python dashboard.py                   # results.csv -> dashboard.html (static, n
 | `derivatives.py` | The model equations: dy/dt for all 37 states (A.54–A.82, the dead-chain second moments, and the energy balance). |
 | `model.py` | Runs the simulation. Turns lb/hr feeds into model units, steps through time, computes polymer properties, writes `results.csv`. Holds `DEFAULT_CONFIG`, the default run. |
 | `plan.py` | Reads a plan CSV and turns it into a run config. |
+| `controllers/` | Closed-loop controller files: `hold_plan.py` (template) and `example_pi_temperature.py` (example). |
 | `dashboard_server.py` | Local web server for the editable dashboard (127.0.0.1 only). |
 | `dashboard.py` / `dashboard_template.html` | Builds the dashboard page. `dashboard.html` is a standalone snapshot. |
 | `results.csv` | Output of the last run: one row per step. |
@@ -191,6 +192,87 @@ T0,100
 
 A mistake in the file gives an error naming the row, for example
 `plan.csv row 4 (H2): change must be 'set' or 'multiply'`.
+
+---
+
+## Closed-loop control: code that decides the inputs every step
+
+By default a run is open loop: every input u(k) comes from the starting inputs
+and the step changes. In closed loop, your own code is called at **every step**.
+It sees the current reactor state and properties, and it decides that step's
+inputs: any of the 7 feed flows and the inlet temperature Tᵢ. The simulator only
+provides this hook. The control logic is up to you: a rule, a PID, a neural
+network, and so on.
+
+### Option A: a controller file
+
+Copy `controllers/hold_plan.py` to `controllers/my_controller.py` and fill in
+`control(obs)`:
+
+```python
+def reset(config):          # optional: called once before the run
+    ...
+
+def control(obs):           # called every step k, before that step is simulated
+    T = obs["state"]["T"]                    # reactor temperature, deg F
+    Mn = obs["props"]["Mn"]                  # any property from results.csv
+    h2 = obs["u_planned"]["flows"]["H2"]     # what the plan says for this step
+    return {"flows": {"H2": h2 * 1.1}, "T_i": -35.0}   # or None to keep the plan
+```
+
+Then pick it in any of three ways:
+
+- **Dashboard:** the **Closed-loop controller** dropdown in Simulation inputs.
+- **Command line:** `python model.py --controller my_controller [plan.csv]`.
+- **Plan CSV:** a `controller,my_controller` row in the list layout.
+
+`controllers/example_pi_temperature.py` is a worked example: a PI loop that
+holds the reactor T at 110 °F by moving Tᵢ. It isn't a recommended design, just
+a demonstration of the pattern, including state kept between steps and
+anti-windup.
+
+### Option B: drive the loop yourself
+
+For scripts that should own the loop, such as training or testing a neural
+network:
+
+```python
+import model
+
+sim = model.Reactor(config)            # e.g. model.DEFAULT_CONFIG
+while not sim.done:
+    obs = sim.observe()
+    u = my_logic(obs)                  # dict or None
+    sim.step(u)
+sim.write_csv("results.csv")           # open it with python dashboard.py
+t, X, U, P = sim.results()             # or use the arrays directly
+```
+
+### What the controller sees (`obs`)
+
+| Key | Content |
+|---|---|
+| `k`, `t`, `dt`, `N` | Step number, time (s), step length (s), total steps |
+| `state` | All 37 states at t_k: `C_M1` … `C_Al`, the moments, and `T` (°F) |
+| `props` | Mn, Mw, PDI, ML, PR, wt %, conversions … (the `results.csv` property columns) |
+| `u_planned` | u(k) from the starting inputs and step changes: `{"flows": {M1, M2, M3, C6, cat, Al, H2}, "T_i": …}` |
+| `u_prev` | u(k−1) actually applied (`None` at k = 0) |
+| `p` | Parameters p(k): V, rate constants … (read only) |
+
+### What it returns
+
+- **`None`:** keep the planned inputs.
+- **A dict with `"flows"`** (any subset of M1, M2, M3, C6, cat, Al, H2, in lb/hr,
+  ≥ 0) and/or **`"T_i"`** (°F). Anything left out stays as planned. The
+  returned inputs are held over [t_k, t_k + Δt].
+
+Bad values (a negative flow, an unknown stream, Tᵢ outside −200 to 450 °F) stop
+the run with a message naming the step.
+
+In `results.csv`, the `flow_*` and `T_i` columns are the inputs the controller
+actually applied. On the dashboard, "Changes during the run" shows the
+controller's name, and the step changes are marked "(planned)", because those
+are what the controller was given, not necessarily what it applied.
 
 ---
 
