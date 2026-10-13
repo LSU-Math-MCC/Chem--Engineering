@@ -1225,6 +1225,7 @@ function initEditor(DATA) {
           h("legend", {}, ["Reactor and molecular weights"]),
           h("div", { class: "fields cols-2" }, [
             field("in-p-V", "Volume V, ft³", cfg.p0.V),
+            field("in-p-CC1_crit", "Critical C_C1, mol/L", cfg.p0.CC1_crit ?? 0.1),
             field("in-mw-M1", "Ethylene, g/mol", cfg.p0.Mw.M1),
             field("in-mw-M2", "Propylene, g/mol", cfg.p0.Mw.M2),
             field("in-mw-M3", "Diene, g/mol", cfg.p0.Mw.M3),
@@ -1277,7 +1278,7 @@ function initEditor(DATA) {
         Mw: { M1: num("in-mw-M1"), M2: num("in-mw-M2"), M3: num("in-mw-M3") },
         neg_dH: { M1: num("in-dh-M1"), M2: num("in-dh-M2"), M3: num("in-dh-M3") },
         H_mix: num("in-p-H_mix"), ML_a: num("in-p-ML_a"), ML_b: num("in-p-ML_b"),
-        T_ref: num("in-p-T_ref"), E: {},
+        T_ref: num("in-p-T_ref"), E: {}, CC1_crit: num("in-p-CC1_crit"),
       },
       x0: {},
       events: [],

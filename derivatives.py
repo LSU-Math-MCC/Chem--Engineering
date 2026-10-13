@@ -139,6 +139,9 @@ def derivatives(t, y, p, feed=None):
             k_a, k_x, k_x2, k_x3,
             k_t, k_t2, k_t3,
             k_tr, k_tr1, k_trM2
+        Optional key "CC1_crit" (mol/L, default 0.1): below this C_C1 the
+        ratio C_Al/C_C1 - 1 is replaced by a smooth polynomial that goes to
+        0 at C_C1 = 0, so the model runs with no catalyst.
         Optional key "energy" turns on the energy balance; without it
         dT/dt = 0 and the reactor is isothermal. Its keys:
             T_i      inlet temperature, deg F
@@ -190,11 +193,15 @@ def derivatives(t, y, p, feed=None):
     # Transfer-to-alkyl term: regenerates a P-type (M1-ended) center, so it
     # is excluded from P0's own death bracket (A.61) but shows up as a gain
     # term there from Q0/R0, and as a full loss term everywhere else.
-    CC1_Critical = 0.1
-    if C_C1 < CC1_Critical:
-        alkyl_ratio = ((C_Al - C_C1)/CC1_Critical**2)*(6*C_C1 - (8/CC1_Critical)*C_C1**2 + (3/CC1_Critical**2)*C_C1**3)
+    # Below CC1_crit the ratio C_Al/C_C1 - 1 becomes a polynomial that is 0 at
+    # C_C1 = 0 and equals C_Al/C_C1 - 1 at C_C1 = CC1_crit, so C_C1 can reach 0.
+    # The solver can step C_C1 a hair below 0 as it runs out; treat that as 0.
+    CC1_Critical = p.get("CC1_crit", 0.1)
+    c1 = max(C_C1, 0.0)
+    if c1 < CC1_Critical:
+        alkyl_ratio = ((C_Al - c1)/CC1_Critical**2)*(6*c1 - (8/CC1_Critical)*c1**2 + (3/CC1_Critical**2)*c1**3)
     else:
-        alkyl_ratio = C_Al / C_C1 - 1.0
+        alkyl_ratio = C_Al / c1 - 1.0
     term_Al = k_tr * alkyl_ratio
     # Transfer-to-M2 term: regenerates a Q-type (M2-ended) center, so it is
     # excluded from Q0's own death bracket (A.62) but appears elsewhere.

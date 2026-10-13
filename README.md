@@ -221,7 +221,9 @@ The last row (k = N) has no input of its own, so it repeats u(N−1).
   enthalpy, heat capacity and density all come from hexane correlations.
   Reaction heat is the only exception. The density correlation holds from
   −200 to 450 °F, and the run stops with a message if T leaves that range.
-- The catalyst feed must stay above zero, because the equations divide by C_C1.
+- The catalyst feed can be 0. Below the critical concentration `CC1_crit`
+  (default 0.1 mol/L), the C_Al/C_C1 term is smoothed so that it goes to 0
+  instead of dividing by zero. See [EQUATIONS.md](EQUATIONS.md), section 1.
 - The rate constants are not measured data. With the defaults, the run ends
   near Mn ≈ 22,000 and conversions of about 93 % ethylene, 30 % propylene and
   65 % diene.

@@ -108,15 +108,13 @@ def operating_point(u, p):
 
 def der(t, states, u, p):
     """dstates/dt for inputs u and parameters p (derivation A.54-A.82+)."""
-    if states[STATE_VARS.index("C_C1")] < 0.0:
-        raise ValueError("C_C1 must stay positive: the model contains C_Al/C_C1.")
     T = states[STATE_VARS.index("T")]
     if not T_RANGE[0] < T < T_RANGE[1]:
         raise ValueError(f"Reactor temperature reached {T:.0f} deg F, outside the "
                          f"{T_RANGE[0]:.0f} to {T_RANGE[1]:.0f} deg F range of the density correlation.")
     F, feed, _ = operating_point(u, p)
     rates = arrhenius(p, T)
-    rates.update(F=F, V=p["V"] * L_PER_FT3)
+    rates.update(F=F, V=p["V"] * L_PER_FT3, CC1_crit=p["CC1_crit"])
     rates["energy"] = {"T_i": u["T_i"], "Mw": p["Mw"], "neg_dH": p["neg_dH"], "H_mix": p["H_mix"]}
     return derivatives(t, states, rates, feed=feed)
 
@@ -307,6 +305,9 @@ DEFAULT_CONFIG = {
         # Arrhenius k = k0 exp(-E (1/T - 1/T_ref)): the rate constants above are
         # k0 at T_ref (deg F); E in deg R (Ea/R), 0 = no temperature dependence.
         "T_ref": 90.0,
+        # Below this C_C1 (mol/L) the C_Al/C_C1 term is smoothed to 0 at
+        # C_C1 = 0, so a catalyst feed of 0 runs (derivatives.py).
+        "CC1_crit": 0.1,
         "E": {key: 0.0 for key in KINETIC_KEYS},
     },
     # Starting concentrations (mol/L) by species, e.g. {"C_M1": 0.5};
@@ -367,8 +368,6 @@ def _validate(cfg):
             raise ValueError(f"Unknown feed stream {key!r}.")
     for key in STREAM_KEYS:
         flows[key] = _number(flows.get(key), f"Feed flow {key}", positive=True)
-    if flows["cat"] < 0.0:
-        raise ValueError("Catalyst flow must be above zero: the model divides by C_C1.")
     if sum(flows.values()) <= 0.0:
         raise ValueError("The total feed flow must be above zero.")
     u0["T_i"] = _temperature(u0.get("T_i"), "Inlet temperature T_i")
@@ -385,6 +384,8 @@ def _validate(cfg):
     p0["ML_a"] = _number(p0.get("ML_a"), "ML constant a")
     p0["ML_b"] = _number(p0.get("ML_b"), "ML constant b")
     # Older saved configs have no Arrhenius data: use T_ref 90 deg F and E = 0.
+    p0["CC1_crit"] = _number(p0.get("CC1_crit", 0.1), "Critical catalyst concentration CC1_crit",
+                             positive=True, allow_zero=False)
     p0["T_ref"] = _temperature(p0.get("T_ref", 90.0), "Arrhenius reference temperature T_ref")
     E = p0.get("E") or {}
     for key in E:
@@ -397,8 +398,6 @@ def _validate(cfg):
         if key not in INITIAL_KEYS:
             raise ValueError(f"Unknown starting concentration {key!r}; use one of {', '.join(INITIAL_KEYS)}.")
         x0[key] = _number(x0[key], f"Starting concentration {key}", positive=True)
-    if x0.get("C_C1", 1.0) < 0.0:
-        raise ValueError("Starting C_C1 must be above zero: the model divides by C_C1.")
     cfg["x0"] = x0
 
     for i, e in enumerate(cfg.get("events", []), start=1):
@@ -465,8 +464,6 @@ def build_inputs(config=DEFAULT_CONFIG):
         for e in cfg["events"]:
             if e["start"] <= k and (e["end"] is None or k <= e["end"]):
                 _apply(e, u, p, k)
-        if u["flows"]["cat"] <= 0.0:
-            raise ValueError(f"Catalyst flow drops to zero at step {k}; the model divides by C_C1.")
         if not T_RANGE[0] < u["T_i"] < T_RANGE[1]:
             raise ValueError(f"Inlet temperature leaves the {T_RANGE[0]:.0f} to {T_RANGE[1]:.0f} deg F range at step {k}.")
         U.append(u)

@@ -42,7 +42,18 @@ For how to run the simulator, see [README.md](README.md).
 
 $$\lambda_L = P_0 + Q_0 + R_0 \qquad \text{(total live chains)}$$
 
-$$\tau_{Al} = k_{tr}\left(\frac{C_{Al}}{C_{C1}} - 1\right) \qquad \tau_{M2} = k_{trM2}\,C_{M2}$$
+$$\tau_{Al} = k_{tr}\,g(C_{C1}) \qquad \tau_{M2} = k_{trM2}\,C_{M2}$$
+
+where $g$ is the alkyl ratio. It is $C_{Al}/C_{C1} - 1$, except that below a
+critical catalyst concentration $c^* $ (`CC1_crit`, default 0.1 mol/L) it is
+replaced by a polynomial that goes to 0 at $C_{C1} = 0$. That way the model
+never divides by zero, and a catalyst feed of 0 can be simulated:
+
+$$g(C_{C1}) = \begin{cases} \dfrac{C_{Al}}{C_{C1}} - 1 & C_{C1} \ge c^* \[2ex] \dfrac{C_{Al} - C_{C1}}{c^{*2}}\left(6C_{C1} - \dfrac{8}{c^*}C_{C1}^2 + \dfrac{3}{c^{*2}}C_{C1}^3\right) & C_{C1} < c^* \end{cases}$$
+
+The two branches are equal at $C_{C1} = c^*$. If the solver steps $C_{C1}$ a
+hair below 0 as the catalyst runs out, it is treated as 0. $c^*$ can be set on
+the dashboard (*Critical C_C1*) or with `CC1_crit` in a plan CSV.
 
 The total rate at which a live chain dies (termination plus transfer) is
 
@@ -288,6 +299,7 @@ and time is in s.
 | Heats of reaction −ΔH | M1 1400, M2 950, M3 700 Btu/lb; ΔH_mix = 1.0e6 Btu/hr |
 | Mooney | a = 2e-4, b = 2e-4 |
 | Arrhenius | Tr = 90 °F; E = 0 for every constant (k = k₀) |
+| Critical C_C1 | c* = 0.1 mol/L |
 | Initial conditions | T0 = 90 °F; species at the feed composition |
 
 The rate constants are not measured data. With these defaults the run ends
