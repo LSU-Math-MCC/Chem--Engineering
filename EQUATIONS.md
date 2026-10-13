@@ -49,7 +49,7 @@ critical catalyst concentration $c^* $ (`CC1_crit`, default 0.1 mol/L) it is
 replaced by a polynomial that goes to 0 at $C_{C1} = 0$. That way the model
 never divides by zero, and a catalyst feed of 0 can be simulated:
 
-$$g(C_{C1}) = \begin{cases} \dfrac{C_{Al}}{C_{C1}} - 1 & C_{C1} \ge c^* \[2ex] \dfrac{C_{Al} - C_{C1}}{c^{*2}}\left(6C_{C1} - \dfrac{8}{c^*}C_{C1}^2 + \dfrac{3}{c^{*2}}C_{C1}^3\right) & C_{C1} < c^* \end{cases}$$
+$$g(C_{C1}) = \begin{cases} \dfrac{C_{Al}}{C_{C1}} - 1 & C_{C1} \ge c^{*2} \[2ex] \dfrac{C_{Al} - C_{C1}}{c^{*2}}\left(6C_{C1} - \dfrac{8}{c^*}C_{C1}^2 + \dfrac{3}{c^{*2}}C_{C1}^3\right) & C_{C1} < c^* \end{cases}$$
 
 The two branches are equal at $C_{C1} = c^*$. If the solver steps $C_{C1}$ a
 hair below 0 as the catalyst runs out, it is treated as 0. $c^*$ can be set on
