@@ -1,5 +1,6 @@
 """This is a sample neural ODE got from gemini. I've been looking at and playing with it"""
-"""With generous aid form google gemini, I have set it up to run with the derivatives from Hoa's derivatives."""
+"""With generous aid form google gemini, I have set it up to run with the derivatives from Hoa's derivatives as a map of sample data. 
+It spits out a plot of the approximations vs the integral on the graph."""
 import numpy as np
 import torch
 import torch.nn as nn
