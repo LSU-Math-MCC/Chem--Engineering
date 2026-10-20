@@ -71,7 +71,7 @@
     "k_trM2": 0.001
   },
   "x0": {
-    "C_M1": 0.0,
+    "C_M1": 0.9,
     "C_M2": 0.0,
     "C_M3": 0.0,
     "C_C1": 0.0,
@@ -80,5 +80,13 @@
     "C_Al": 0.0
   },
   "controller": "example_pi_temperature",
-  "events": []
+  "events": [
+    {
+      "start": 75,
+      "end": null,
+      "target": "flow.M1",
+      "mode": "multiply",
+      "value": 1.2
+    }
+  ]
 }

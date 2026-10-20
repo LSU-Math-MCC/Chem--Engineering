@@ -95,7 +95,7 @@ A run is described by one JSON-style dict (see `DEFAULT_CONFIG` in `model.py`):
 |---|---|
 | `N`, `dt` | Number of steps and step length in seconds (default 150 × 10 s). |
 | `u0` | Starting inputs: `flows` (lb/hr per stream) and `T_i` (°F). |
-| `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants (k₀ at `T_ref`), `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`, and the Arrhenius data `T_ref` (°F) and `E` (°R, one per rate constant). |
+| `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants (k₀ at `T_ref`), `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`, the long chain branching constants `LCB_kb` and `LCB_beta`, and the Arrhenius data `T_ref` (°F) and `E` (°R, one per rate constant). |
 | `x0` | Starting concentrations (mol/L) by species, e.g. `{"C_M1": 0.5}`. Species left out start at the feed composition. |
 | `events` | Step changes applied on top of `u0`/`p0` (see below). |
 

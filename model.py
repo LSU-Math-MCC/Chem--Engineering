@@ -83,7 +83,7 @@ T_RANGE = (-200.0, 450.0)
 PROPERTY_NAMES = [
     "live_chains", "dead_chains",
     "polymer_conc",
-    "Mn", "Mw", "PDI",
+    "Mn", "Mw", "PDI", "LCB_alpha",
     "wt_ethylene", "wt_propylene", "wt_diene",
     "X_M1", "X_M3",
     "PR", "ML",
@@ -161,6 +161,13 @@ def properties(states, u, p):
         lambda_0    = P0 + Q0 + R0 + B0
         lambda_ijk  = first/second moments of live + dead chains
     Molecular weights come from p["Mw"] (M1, M2, M3 repeat-unit weights).
+
+    Long chain branching hack: Mw from the moments is scaled by alpha,
+        k_gc  = 1 / (4 theta B002)       theta = V/F, residence time (s)
+        k_c   = k_b B001 B0              k_b = p["LCB_kb"] (adjustable)
+        alpha = 1                        if k_c <= k_gc
+                beta k_c / k_gc          if k_c >  k_gc   beta = p["LCB_beta"]
+    k_b = 0, beta = 1 gives the unbranched Mw.
     """
     s = dict(zip(STATE_VARS, states))
     m1, m2, m3 = p["Mw"]["M1"], p["Mw"]["M2"], p["Mw"]["M3"]
@@ -184,11 +191,16 @@ def properties(states, u, p):
     mass2 = (m1**2 * lam200 + m2**2 * lam020 + m3**2 * lam002
              + 2 * m1 * m2 * lam110 + 2 * m1 * m3 * lam101 + 2 * m2 * m3 * lam011)
 
-    Mn = mass1 / lam0 if lam0 > 0 else np.nan
-    Mw = mass2 / mass1 if mass1 > 0 else np.nan
-    PDI = Mw / Mn if Mn > 0 else np.nan
-
     F, feed, _ = operating_point(u, p)
+
+    theta = p["V"] * L_PER_FT3 / F
+    k_gc = 1.0 / (4.0 * theta * s["B002"]) if s["B002"] > 0 else np.inf
+    k_c = p["LCB_kb"] * s["B001"] * s["B0"]
+    alpha = p["LCB_beta"] * k_c / k_gc if k_c > k_gc else 1.0
+
+    Mn = mass1 / lam0 if lam0 > 0 else np.nan
+    Mw = alpha * mass2 / mass1 if mass1 > 0 else np.nan
+    PDI = Mw / Mn if Mn > 0 else np.nan
 
     def conversion(state):
         fed = feed.get(state, 0.0)
@@ -204,6 +216,7 @@ def properties(states, u, p):
         "Mn": Mn,
         "Mw": Mw,
         "PDI": PDI,
+        "LCB_alpha": alpha,
         "wt_ethylene": pct(m1 * lam100, mass1),
         "wt_propylene": pct(m2 * lam010, mass1),
         "wt_diene": pct(m3 * lam001, mass1),
@@ -305,6 +318,9 @@ DEFAULT_CONFIG = {
         "H_mix": 1.0e6,
         # Mooney viscosity ML = (a + b PD) Mw
         "ML_a": 2.0e-4, "ML_b": 2.0e-4,
+        # Long chain branching hack (properties()): Mw is scaled by alpha once
+        # k_c = LCB_kb B001 B0 passes 1 / (4 theta B002). 0 and 1 = no branching.
+        "LCB_kb": 0.0, "LCB_beta": 1.0,
         # Arrhenius k = k0 exp(-E (1/T - 1/T_ref)): the rate constants above are
         # k0 at T_ref (deg F); E in deg R (Ea/R), 0 = no temperature dependence.
         "T_ref": 90.0,
@@ -389,6 +405,9 @@ def _validate(cfg):
     p0["H_mix"] = _number(p0.get("H_mix"), "Heat of mixing")
     p0["ML_a"] = _number(p0.get("ML_a"), "ML constant a")
     p0["ML_b"] = _number(p0.get("ML_b"), "ML constant b")
+    # Older saved configs have no branching data: k_b = 0, beta = 1 (no branching).
+    p0["LCB_kb"] = _number(p0.get("LCB_kb", 0.0), "Branching constant k_b", positive=True)
+    p0["LCB_beta"] = _number(p0.get("LCB_beta", 1.0), "Branching constant beta", positive=True)
     # Older saved configs have no Arrhenius data: use T_ref 90 deg F and E = 0.
     p0["CC1_crit"] = _number(p0.get("CC1_crit", 0.1), "Critical catalyst concentration CC1_crit",
                              positive=True, allow_zero=False)

@@ -537,7 +537,7 @@ function mount(DATA, keepTime) {
       const lam0 = (c("live_chains", k) || 0) + (c("dead_chains", k) || 0);
       return [
         ["Number-average MW", "Mn = P₁ᵐ / λ₀", nv(P1m(k)) + " / " + nv(lam0), nv(c("Mn", k)) + " g/mol"],
-        ["Weight-average MW", "Mw = P₂ᵐ / P₁ᵐ", nv(P2m(k)) + " / " + nv(P1m(k)), nv(c("Mw", k)) + " g/mol"],
+        ["Weight-average MW", "Mw = α · P₂ᵐ / P₁ᵐ", nv(c("LCB_alpha", k) ?? 1) + " × " + nv(P2m(k)) + " / " + nv(P1m(k)), nv(c("Mw", k)) + " g/mol"],
       ];
     },
     pdi: k => [["Dispersity", "PDI = Mw / Mn", nv(c("Mw", k)) + " / " + nv(c("Mn", k)), nv(c("PDI", k))]],
@@ -1268,6 +1268,14 @@ function initEditor(DATA) {
           ]),
         ]),
         h("fieldset", { class: "fs" }, [
+          h("legend", {}, ["Long chain branching Mw = α · Mw₀"]),
+          h("p", { class: "hint" }, ["k_gc = 1 / (4 θ B002), k_c = k_b · B001 · B0, θ = V/F in s. α = 1 if k_c ≤ k_gc, else β · k_c / k_gc. k_b = 0, β = 1 turns it off."]),
+          h("div", { class: "fields cols-2" }, [
+            field("in-p-LCB_kb", "k_b", cfg.p0.LCB_kb ?? 0),
+            field("in-p-LCB_beta", "β", cfg.p0.LCB_beta ?? 1),
+          ]),
+        ]),
+        h("fieldset", { class: "fs" }, [
           h("legend", {}, ["Arrhenius k = k₀ · exp(−E · (1/T − 1/Tr))"]),
           h("p", { class: "hint" }, ["Each rate constant below is k₀, its value at Tr. E is Ea/R in °R; E = 0 means no temperature dependence. T and Tr are converted to Rankine (°F + 459.67)."]),
           h("div", { class: "fields cols-2" }, [field("in-p-T_ref", "Reference temperature Tr, °F", cfg.p0.T_ref ?? 90)]),
@@ -1299,6 +1307,7 @@ function initEditor(DATA) {
         neg_dH: { M1: num("in-dh-M1"), M2: num("in-dh-M2"), M3: num("in-dh-M3") },
         H_mix: num("in-p-H_mix"), ML_a: num("in-p-ML_a"), ML_b: num("in-p-ML_b"),
         T_ref: num("in-p-T_ref"), E: {}, CC1_crit: num("in-p-CC1_crit"),
+        LCB_kb: num("in-p-LCB_kb"), LCB_beta: num("in-p-LCB_beta"),
       },
       x0: {},
       controller: val("in-controller") || null,

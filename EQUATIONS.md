@@ -271,7 +271,7 @@ $$P_2^m = Mw_1^2\lambda_{200} + Mw_2^2\lambda_{020} + Mw_3^2\lambda_{002} + 2Mw_
 | Property | Formula | Units |
 |---|---|---|
 | Number-average MW | $M_n = P_1^m / \lambda_0$ | g/mol |
-| Weight-average MW | $M_w = P_2^m / P_1^m$ | g/mol |
+| Weight-average MW | $M_w = \alpha\,P_2^m / P_1^m$ (α: long chain branching, below) | g/mol |
 | Dispersity | $PDI = M_w / M_n$ | – |
 | Mooney viscosity | $ML = (a + b \cdot PDI)\,M_w$ | – |
 | Polymerization rate | $PR = F \cdot P_1^m$ (F in L/s, × 3600 / 453.59) | lb/hr |
@@ -285,6 +285,18 @@ $$P_2^m = Mw_1^2\lambda_{200} + Mw_2^2\lambda_{020} + Mw_3^2\lambda_{002} + 2Mw_
 | Live chains | $\lambda_L = P_0 + Q_0 + R_0$ | mol/L |
 | Dead chains | $B_0$ | mol/L |
 | Residence time | $\tau = 60\,V/F$ (V in ft³, F in ft³/hr) | min |
+
+**Long chain branching hack.** With $\theta = V/F$ the residence time in s
+(the time unit of the rate constants) and two adjustable parameters
+$k_b$ (`LCB_kb`) and $\beta$ (`LCB_beta`):
+
+$$k_{gc} = \frac{1}{4\,\theta\,B_{002}}, \qquad k_c = k_b\,B_{001}\,B_0$$
+
+$$\alpha = \begin{cases} 1 & k_c \le k_{gc} \\ \beta\,k_c / k_{gc} & k_c > k_{gc} \end{cases}$$
+
+$M_w = \alpha\,M_{w,0}$, where $M_{w,0} = P_2^m / P_1^m$ is the unadjusted value,
+and $PDI = M_w / M_n$ as before. $k_b = 0$, $\beta = 1$ (the defaults) give the
+old behavior. α is written to `results.csv` as `LCB_alpha`.
 
 ---
 
