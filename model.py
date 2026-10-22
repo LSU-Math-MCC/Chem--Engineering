@@ -286,38 +286,39 @@ def write_csv(path, t, X, U, P):
 #               source  label for values, e.g. "feeds.csv: H2" (display only)
 #
 # Flows, MWs, T_i, T, heats of reaction and dH_mix are from the course notes.
-# The rate constants (mol/L, s) are not from data. V, k11, k21, k31, k_tr
-# and the Mooney constants a, b were set by the team (2026-10-06); with these
-# feeds the steady state gives Mn ~22k and conversions ethylene ~93%,
-# propylene ~30%, diene ~65%. The scaled Table 4.29 grades need their scale
-# factors.
+# The rate constants (mol/L, s) are not from data. The base case below is
+# the team's Grade 1 sheet (2026-10-22): feeds, V, CC1_crit, rate constants
+# with their E, the Mooney constants a, b, and an empty reactor (all
+# concentrations 0) at 45 deg F. H2 feed, k_t3, Mw, heats of reaction and
+# dH_mix are not on the sheet and keep their earlier values. The scaled
+# Table 4.29 grades need their scale factors.
 
 DEFAULT_CONFIG = {
     "N": 150,
     "dt": 10.0,
     "u0": {
         "flows": {"M1": 12000.0, "M2": 20000.0, "M3": 2000.0, "C6": 300000.0,
-                  "cat": 50.0, "Al": 156.37, "H2": 2.0},
+                  "cat": 50.0, "Al": 160.0, "H2": 2.0},
         "T_i": -32.0,
     },
     "p0": {
-        "V": 650.0,
-        "T0": 90.0,
+        "V": 600.0,
+        "T0": 45.0,
         # Initiation / propagation
-        "k_i1": 50.0, "k_i2": 5.0,
-        "k11": 800.0, "k12": 29.0, "k13": 189.0,
-        "k21": 500.0, "k22": 10.9, "k31": 150.0,
+        "k_i1": 500.0, "k_i2": 50.0,
+        "k11": 500.0, "k12": 30.0, "k13": 175.0,
+        "k21": 310.0, "k22": 10.0, "k31": 150.0,
         # Catalyst activation / deactivation
-        "k_a": 0.5, "k_x": 5e-3, "k_x2": 1e-3, "k_x3": 1e-3,
+        "k_a": 100.0, "k_x": 5e-3, "k_x2": 1e-3, "k_x3": 1e-3,
         # Termination / chain transfer
         "k_t": 0.0202, "k_t2": 1e-3, "k_t3": 1e-3,
-        "k_tr": 1.0e-4, "k_tr1": 2.37, "k_trM2": 1e-3,
+        "k_tr": 1.0e-7, "k_tr1": 2.5, "k_trM2": 1e-3,
         "Mw": {"M1": 28.0, "M2": 42.0, "M3": 120.0},
         # Energy balance: -dH_RMj (Btu/lb) and dH_mix (Btu/hr)
         "neg_dH": {"M1": 1400.0, "M2": 950.0, "M3": 700.0},
         "H_mix": 1.0e6,
         # Mooney viscosity ML = (a + b PD) Mw
-        "ML_a": 2.0e-4, "ML_b": 2.0e-4,
+        "ML_a": 2.0e-4, "ML_b": 1.3e-4,
         # Long chain branching hack (properties()): Mw is scaled by alpha once
         # k_c = LCB_kb B001 B0 passes 1 / (4 theta B002). 0 and 1 = no branching.
         "LCB_kb": 0.0, "LCB_beta": 1.0,
@@ -326,12 +327,14 @@ DEFAULT_CONFIG = {
         "T_ref": 90.0,
         # Below this C_C1 (mol/L) the C_Al/C_C1 term is smoothed to 0 at
         # C_C1 = 0, so a catalyst feed of 0 runs (derivatives.py).
-        "CC1_crit": 0.1,
-        "E": {key: 0.0 for key in KINETIC_KEYS},
+        "CC1_crit": 1e-7,
+        # Propagation constants are temperature dependent; the rest are not.
+        "E": {key: 1000.0 if key in ("k11", "k12", "k13", "k21", "k22", "k31") else 0.0
+              for key in KINETIC_KEYS},
     },
     # Starting concentrations (mol/L) by species, e.g. {"C_M1": 0.5};
-    # species left out start at the feed composition.
-    "x0": {},
+    # species left out start at the feed composition. Base case: empty reactor.
+    "x0": {key: 0.0 for key in INITIAL_KEYS},
     # Closed loop: name of a file in controllers/ whose control(obs) picks
     # u(k) every step (see Reactor below); None = open loop, u(k) from events.
     "controller": None,

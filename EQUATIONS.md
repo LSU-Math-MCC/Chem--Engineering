@@ -45,7 +45,7 @@ $$\lambda_L = P_0 + Q_0 + R_0 \qquad \text{(total live chains)}$$
 $$\tau_{Al} = k_{tr}\,g(C_{C1}) \qquad \tau_{M2} = k_{trM2}\,C_{M2}$$
 
 where $g$ is the alkyl ratio. It is $C_{Al}/C_{C1} - 1$, except that below a
-critical catalyst concentration $c^* $ (`CC1_crit`, default 0.1 mol/L) it is
+critical catalyst concentration $c^* $ (`CC1_crit`, default 1e-7 mol/L) it is
 replaced by a polynomial that goes to 0 at $C_{C1} = 0$. That way the model
 never divides by zero, and a catalyst feed of 0 can be simulated:
 
@@ -125,7 +125,7 @@ ight]$$
 T and Tr are in Rankine (°F + 459.67), so 1/T stays finite near 0 °F. With
 E = 0, k = k₀ at every temperature, which reproduces the earlier constant-k
 model exactly. When E > 0, a hotter reactor gives a larger k. For example, with
-E = 3000 °R, k₁₁ goes from 800 at 90 °F to 1,061 at 120 °F.
+E = 1000 °R (the default for the propagation constants), k₁₁ goes from 500 at 90 °F to 549 at 120 °F.
 
 The code is `arrhenius()` in `model.py`, called on every evaluation of the
 right-hand side.
@@ -302,24 +302,26 @@ old behavior. α is written to `results.csv` as `LCB_alpha`.
 
 ## 9. Default parameters
 
-These are from `DEFAULT_CONFIG` in `model.py`. Concentrations are in mol/L
-and time is in s.
+These are from `DEFAULT_CONFIG` in `model.py`, the Grade 1 base case. Concentrations
+are in mol/L and time is in s. The second number on the rate-constant sheet is E (°R).
 
 | Group | Values |
 |---|---|
-| Reactor | V = 650 ft³, T0 = 90 °F, Tᵢ = −32 °F |
-| Feeds (lb/hr) | M1 12,000 · M2 20,000 · M3 2,000 · hexane 300,000 · VCl₄ 50 · Al alkyl 156.37 · H₂ 2 |
-| Initiation / propagation | k_i1 50, k_i2 5, k11 800, k12 29, k13 189, k21 500, k22 10.9, k31 150 |
-| Catalyst | k_a 0.5, k_x 5e-3, k_x2 1e-3, k_x3 1e-3 |
-| Termination / transfer | k_t 0.0202, k_t2 1e-3, k_t3 1e-3, k_tr 1e-4, k_tr1 2.37, k_trM2 1e-3 |
+| Reactor | V = 600 ft³, T0 = 45 °F, Tᵢ = −32 °F |
+| Feeds (lb/hr) | M1 12,000 · M2 20,000 · M3 2,000 · hexane 300,000 · VCl₄ 50 · Al alkyl 160 · H₂ 2 |
+| Initiation / propagation | k_i1 500, k_i2 50, k11 500, k12 30, k13 175, k21 310, k22 10, k31 150 |
+| Catalyst | k_a 100, k_x 5e-3, k_x2 1e-3, k_x3 1e-3 |
+| Termination / transfer | k_t 0.0202, k_t2 1e-3, k_t3 1e-3, k_tr 1e-7, k_tr1 2.5, k_trM2 1e-3 |
 | Molecular weights | M1 28, M2 42, M3 120 g/mol |
 | Heats of reaction −ΔH | M1 1400, M2 950, M3 700 Btu/lb; ΔH_mix = 1.0e6 Btu/hr |
-| Mooney | a = 2e-4, b = 2e-4 |
-| Arrhenius | Tr = 90 °F; E = 0 for every constant (k = k₀) |
-| Critical C_C1 | c* = 0.1 mol/L |
-| Initial conditions | T0 = 90 °F; species at the feed composition |
+| Mooney | a = 2e-4, b = 1.3e-4 |
+| Long chain branching | k_b = 0, β = 1 (off) |
+| Arrhenius | Tr = 90 °F; E = 1000 °R for k11, k12, k13, k21, k22, k31; E = 0 for the rest |
+| Critical C_C1 | c* = 1e-7 mol/L |
+| Initial conditions | T0 = 45 °F; empty reactor (all concentrations 0) |
 
-The rate constants are not measured data. With these defaults the run ends
-near steady state at Mn ≈ 22,000, PDI ≈ 2.0, ML ≈ 27, T ≈ 120 °F, a residence
-time of about 5 min, and conversions of about 93 % ethylene, 30 % propylene and
-65 % diene.
+H₂ feed, k_t3, molecular weights and heats are not on the Grade 1 sheet and keep
+their earlier values. The rate constants are not measured data. With these
+defaults and no step changes the run ends at Mn ≈ 54,000, PDI ≈ 2.0, ML ≈ 50,
+T ≈ 114 °F, a residence time of about 4.75 min, and conversions of about 91 %
+ethylene, 32 % propylene and 69 % diene.
