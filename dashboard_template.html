@@ -465,6 +465,12 @@ function mount(DATA, keepTime) {
 
   // ---------------------------------------------------------------- series helpers
   const col = key => k => cols[key][k];
+  // Measured series: only when the run had noise on that variable (older CSVs have no _meas columns).
+  const noisy = key => (key + "_meas") in cols && cols[key + "_meas"].some((v, i) => v !== null && v !== cols[key][i]);
+  const measured = (key, label) => noisy(key) ? [[key + "_meas", label + ", measured", col(key + "_meas")]] : [];
+  // Case 1: Mw/Mn have no measurement (blank _meas columns) while the other measurements exist.
+  const mwNotMeasured = "Mw_meas" in cols && cols.Mw_meas.every(v => v === null)
+    && "T_meas" in cols && cols.T_meas.some(v => v !== null);
   const pct = key => k => (cols[key][k] === null ? null : 100 * cols[key][k]);
   const indexed = key => {
     const base = cols[key][0];
@@ -474,6 +480,15 @@ function mount(DATA, keepTime) {
   // The inlet temperature is drawn on the temperature chart, not as % of start.
   const changingInputs = inputKeys.filter(key => key !== "T_i" && cols[key].some(v => v !== cols[key][0]));
   const COLORS = ["var(--s1)", "var(--s2)", "var(--s3)"];
+  // A measured series (key ending in _meas) takes the colour of its true series and is drawn
+  // thinner and translucent underneath it; the other series take the palette in order.
+  const isMeas = key => String(key).endsWith("_meas");
+  const colorOf = (cfg, i) => {
+    const key = cfg.series[i][0];
+    const base = isMeas(key) ? cfg.series.findIndex(([k]) => k + "_meas" === key) : -1;
+    if (base >= 0) return colorOf(cfg, base);
+    return COLORS[(cfg.series.slice(0, i + 1).filter(([k]) => !isMeas(k)).length - 1) % COLORS.length];
+  };
 
   // ---------------------------------------------------------------- equations with numbers (same formulas as model.py)
   const P0 = DATA.config && DATA.config.p0;
@@ -582,20 +597,25 @@ function mount(DATA, keepTime) {
 
   const CHARTS = [
     { id: "temp", title: "Temperature", unit: "°F", zero: false,
-      series: [["T", "Reactor", col("T")], ["Ti", "Inlet", col("T_i")]] },
+      series: [["T", "Reactor", col("T")], ["Ti", "Inlet", col("T_i")]].concat(measured("T", "Reactor")) },
     { id: "pr", title: "Polymerization rate", unit: "lb/hr", zero: true,
-      series: [["PR", "Polymer made", col("PR")]] },
+      series: [["PR", "Polymer made", col("PR")]].concat(measured("PR", "PR")) },
     { id: "mw", title: "Molecular weight", unit: "g/mol", zero: true,
-      series: [["Mn", "Mn, number average", col("Mn")], ["Mw", "Mw, weight average", col("Mw")]] },
+      ...(mwNotMeasured ? { note: "Mw and Mn are not measured in case 1, so this chart shows the true values only. Choose case 2 to measure them." } : {}),
+      series: [["Mn", "Mn, number average", col("Mn")], ["Mw", "Mw, weight average", col("Mw")]]
+        .concat(measured("Mn", "Mn"), measured("Mw", "Mw")) },
     { id: "pdi", title: "Dispersity", unit: "PDI = Mw / Mn", zero: false,
       series: [["PDI", "PDI", col("PDI")]] },
     { id: "comp", title: "Polymer composition", unit: "wt %", zero: true,
       series: [["e", "Ethylene", col("wt_ethylene")], ["p", "Propylene", col("wt_propylene")], ["d", "Diene", col("wt_diene")]] },
+    ...(noisy("X_M1") || noisy("X_M3") ? [{ id: "xmeas", title: "Measured composition", unit: "wt %", zero: true,
+      series: [["X_M1", "X_C2", col("X_M1")], ["X_M3", "X_diene", col("X_M3")]]
+        .concat(measured("X_M1", "X_C2"), measured("X_M3", "X_diene")) }] : []),
     { id: "conv", title: "Monomer conversion", unit: "%", zero: true,
       note: "Feed that does not leave in the outlet. During a transient this includes monomer accumulating in the reactor.",
       series: [["e", "Ethylene", pct("conv_M1")], ["p", "Propylene", pct("conv_M2")], ["d", "Diene", pct("conv_M3")]] },
     { id: "ml", title: "Mooney viscosity", unit: "ML = (a + b·PD) · Mw", zero: true,
-      series: [["ML", "ML", col("ML")]] },
+      series: [["ML", "ML", col("ML")]].concat(measured("ML", "ML")) },
     { id: "chains", title: "Polymer chains", unit: "mol/L", zero: true,
       series: [["live", "Live chains", col("live_chains")], ["dead", "Dead chains", col("dead_chains")]] },
   ];
@@ -681,7 +701,7 @@ function mount(DATA, keepTime) {
   function makeCard(cfg) {
     const legend = h("div", { class: "legend" });
     if (cfg.series.length > 1) {
-      cfg.series.forEach(([, label], i) => legend.append(h("span", {}, [h("i", { style: "background:" + COLORS[i] }), label])));
+      cfg.series.forEach(([key, label], i) => legend.append(h("span", {}, [h("i", { style: "background:" + colorOf(cfg, i) + (isMeas(key) ? ";opacity:0.55" : "") }), label])));
     }
     const plot = h("div", { class: "plot" });
     const card = h("section", { class: "card", "aria-label": cfg.title }, [
@@ -772,7 +792,10 @@ function mount(DATA, keepTime) {
       ["wt_ethylene", "Ethylene, wt %"], ["wt_propylene", "Propylene, wt %"], ["wt_diene", "Diene, wt %"],
       ["X_M1", "X_M1, ethylene of C2+C3, wt %"], ["X_M3", "X_M3, diene, wt %"],
       ["conv_M1", "Ethylene conversion"], ["conv_M2", "Propylene conversion"], ["conv_M3", "Diene conversion"],
-      ["live_chains", "Live chains, mol/L"], ["dead_chains", "Dead chains, mol/L"]]],
+      ["live_chains", "Live chains, mol/L"], ["dead_chains", "Dead chains, mol/L"]].filter(([k]) => k in cols)],
+    ["Measured (blank = not measured in this case)", [["ML_meas", "ML"], ["Mw_meas", "Mw, g/mol"], ["Mn_meas", "Mn, g/mol"],
+      ["X_M1_meas", "X_C2, wt %"], ["X_M3_meas", "X_diene, wt %"], ["T_meas", "Temperature, °F"], ["PR_meas", "PR, lb/hr"]]
+      .filter(([k]) => k in cols)],
   ];
   const tableCells = [];
   const tableTitle = h("span", {});
@@ -892,8 +915,10 @@ function mount(DATA, keepTime) {
       svg.append(s("text", { x: ex + 4, y: m.t - 8, "font-size": 10.5, fill: "var(--ink-2)" }, eventText(e)));
     }
 
-    // Lines
-    cfg.series.forEach(([, , get], i) => {
+    // Lines (measured ones first, so the true line stays on top)
+    const order = cfg.series.map((_, i) => i).sort((a, b) => isMeas(cfg.series[b][0]) - isMeas(cfg.series[a][0]));
+    order.forEach(i => {
+      const [key, , get] = cfg.series[i];
       let d = "", pen = false;
       for (let k = 0; k <= N; k++) {
         const v = get(k);
@@ -902,7 +927,8 @@ function mount(DATA, keepTime) {
         d += (pen ? "L" : "M") + x(t[k]).toFixed(1) + " " + y(v).toFixed(1);
         pen = true;
       }
-      svg.append(s("path", { d, fill: "none", stroke: COLORS[i], "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      svg.append(s("path", { d, fill: "none", stroke: colorOf(cfg, i), "stroke-width": isMeas(key) ? 1.25 : 2, opacity: isMeas(key) ? 0.55 : 1,
+        "stroke-linejoin": "round", "stroke-linecap": "round" }));
     });
 
     // End labels (dropped when they would collide; legend + tooltip still carry them)
@@ -921,7 +947,7 @@ function mount(DATA, keepTime) {
     cfg.series.forEach(([, , get], i) => {
       const v = get(sel);
       if (v === null || !isFinite(v)) return;
-      svg.append(s("circle", { cx: sx, cy: y(v), r: 4.5, fill: COLORS[i], stroke: "var(--surface)", "stroke-width": 2 }));
+      svg.append(s("circle", { cx: sx, cy: y(v), r: 4.5, fill: colorOf(cfg, i), stroke: "var(--surface)", "stroke-width": 2 }));
     });
 
     // Hover layer
@@ -953,7 +979,7 @@ function mount(DATA, keepTime) {
   function showTooltip(evt, cfg, k) {
     const rows = [h("div", { class: "tt-time" }, ["t = " + fmtTime(t[k]) + " · step " + k])];
     cfg.series.forEach(([, label, get], i) => {
-      rows.push(h("div", { class: "tt-row" }, [h("i", { style: "background:" + COLORS[i] }), h("b", {}, [fmt(get(k), 4)]), h("span", {}, [label])]));
+      rows.push(h("div", { class: "tt-row" }, [h("i", { style: "background:" + colorOf(cfg, i) }), h("b", {}, [fmt(get(k), 4)]), h("span", {}, [label])]));
     });
     rows.push(h("div", { class: "tt-time" }, ["Click to select this time"]));
     tooltip.replaceChildren(...rows);
@@ -1018,6 +1044,10 @@ function initEditor(DATA) {
     return h("label", { class: "field" + (opts.cls ? " " + opts.cls : ""), for: id }, [h("span", {}, [label]), input]);
   };
   const val = id => document.getElementById(id).value.trim();
+  // Measured variables and their noise σ labels (model.MEAS_KEYS).
+  const MEAS = [["ML", "ML"], ["Mw", "Mw"], ["Mn", "Mn"], ["X_M1", "X_C2"], ["X_M3", "X_diene"], ["T", "T, °F"], ["PR", "PR"]];
+  // model.MEAS_CASES
+  const MEAS_CASES = { 1: ["ML", "X_M1", "X_M3", "T", "PR"], 2: ["ML", "Mw", "Mn", "X_M1", "X_M3", "T", "PR"] };
   const num = id => {
     const el = document.getElementById(id);
     const raw = el.value.trim();
@@ -1126,6 +1156,34 @@ function initEditor(DATA) {
       h("p", { class: "hint" }, ["A controller is a file in the controllers folder. Every step, its control(obs) sees the reactor state and properties and can set any feed flow and the inlet temperature. Step changes become the planned inputs it is given. See controllers/hold_plan.py."]),
       h("label", { class: "field", for: "in-controller" }, [h("span", {}, ["Controller"]), controllerSelect]),
     ]);
+
+    const meas = cfg.measure || DATA.defaults?.measure || { case: 1, noise: false, seed: 0, sigma: {} };
+    const sigmaOf = k => (meas.sigma || {})[k] ?? (DATA.defaults?.measure?.sigma || {})[k] ?? (k === "T" ? 1 : 0.02);
+    const caseSelect = h("select", { id: "in-meas-case" }, [h("option", { value: "1" }, ["Case 1"]), h("option", { value: "2" }, ["Case 2"])]);
+    caseSelect.value = String(meas.case ?? 1);
+    const noiseSelect = h("select", { id: "in-meas-noise" }, [h("option", { value: "off" }, ["Off"]), h("option", { value: "on" }, ["On"])]);
+    noiseSelect.value = meas.noise ? "on" : "off";
+    const sigmaFields = MEAS.map(([k, label]) => field("in-meas-sigma-" + k, "σ " + label, sigmaOf(k)));
+    const caseNote = h("p", { class: "hint" });
+    // Show what the selected case measures; σ boxes for unmeasured variables are hidden.
+    const showCase = () => {
+      const measured = MEAS_CASES[caseSelect.value];
+      caseNote.textContent = "Case " + caseSelect.value + " measures " + MEAS.filter(([k]) => measured.includes(k)).map(([, label]) => label.split(",")[0]).join(", ") + ".";
+      MEAS.forEach(([k], i) => { sigmaFields[i].hidden = !measured.includes(k); });
+    };
+    caseSelect.addEventListener("change", showCase);
+    const noise = h("fieldset", { class: "fs" }, [
+      h("legend", {}, ["Measurements and noise"]),
+      h("p", { class: "hint" }, ["Only the measured variables of the case get noise: value · (1 + σ · e) with σ a fraction, and T + σ · e with σ in °F; e ~ N(0, 1) each step. The controller sees the measured values; results keep the true values and add <name>_meas columns. The same seed gives the same noise."]),
+      h("div", { class: "fields cols-2" }, [
+        h("label", { class: "field", for: "in-meas-case" }, [h("span", {}, ["Measured"]), caseSelect]),
+        h("label", { class: "field", for: "in-meas-noise" }, [h("span", {}, ["Noise"]), noiseSelect]),
+        field("in-meas-seed", "Seed", meas.seed ?? 0),
+      ]),
+      caseNote,
+      h("div", { class: "fields cols-2" }, sigmaFields),
+    ]);
+    showCase();
 
     const init = h("fieldset", { class: "fs" }, [
       h("legend", {}, ["Initial conditions, t = 0"]),
@@ -1291,7 +1349,7 @@ function initEditor(DATA) {
 
     const actions = h("div", { class: "actions" }, [runBtn, planBtn, planInput, resetBtn, csvLink, status]);
     form.replaceChildren(
-      h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base, init]), h("div", { class: "col" }, [loop, steps])]),
+      h("div", { class: "editor-grid" }, [h("div", { class: "col" }, [runLength, base, init]), h("div", { class: "col" }, [loop, noise, steps])]),
       params, actions,
     );
     refresh();
@@ -1311,6 +1369,8 @@ function initEditor(DATA) {
       },
       x0: {},
       controller: val("in-controller") || null,
+      measure: { case: Number(val("in-meas-case")), noise: val("in-meas-noise") === "on", seed: num("in-meas-seed"),
+        sigma: Object.fromEntries(MEAS.map(([k]) => [k, num("in-meas-sigma-" + k)])) },
       events: [],
     };
     for (const [k] of INIT) if (val("in-x0-" + k) !== "") cfg.x0[k] = num("in-x0-" + k);

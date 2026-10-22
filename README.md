@@ -98,6 +98,7 @@ A run is described by one JSON-style dict (see `DEFAULT_CONFIG` in `model.py`):
 | `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants (k₀ at `T_ref`), `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`, the long chain branching constants `LCB_kb` and `LCB_beta`, and the Arrhenius data `T_ref` (°F) and `E` (°R, one per rate constant). |
 | `x0` | Starting concentrations (mol/L) by species, e.g. `{"C_M1": 0.5}`. Species left out start at the feed composition. |
 | `events` | Step changes applied on top of `u0`/`p0` (see below). |
+| `measure` | What is measured and its noise: `{"case": 1, "noise": false, "seed": 0, "sigma": {...}}`. Case 1 measures ML, X_C2 (`X_M1`), X_diene (`X_M3`), T and PR; case 2 also Mw and Mn. Only these get noise. With `noise` on, each gets e ~ N(0, 1) per step from `seed`: value · (1 + σ·e), with σ a fraction (default 0.02), and T + σ·e with σ in °F (default 1), clipped to the physical range (≥ 0; X between 0 and 100 %). The controller sees the measured values; `results.csv` keeps the true values and adds `<name>_meas` columns. In a plan CSV: `measure.case`, `measure.noise` (1/0), `measure.seed`, `measure.sigma.ML` … (starting values only). |
 
 Each event has `start` and `end` (steps, where `end: null` means until the
 end of the run), `target` (`flow.H2`, `T_i`, `p.k11` …), `mode` (`set` or
@@ -254,7 +255,9 @@ t, X, U, P = sim.results()             # or use the arrays directly
 |---|---|
 | `k`, `t`, `dt`, `N` | Step number, time (s), step length (s), total steps |
 | `state` | All 37 states at t_k: `C_M1` … `C_Al`, the moments, and `T` (°F) |
-| `props` | Mn, Mw, PDI, ML, PR, wt %, conversions … (the `results.csv` property columns) |
+| `meas` | The measured variables of the case (case 1: ML, X_M1, X_M3, T, PR; case 2: + Mw, Mn), noisy when noise is on |
+| `props` | Mn, Mw, PDI, ML, PR, wt %, conversions …, with the measured values for the variables in `meas`; the rest are exact |
+| `state_true`, `props_true` | The same without noise (the `results.csv` columns); `state["T"]` is the measured T |
 | `u_planned` | u(k) from the starting inputs and step changes: `{"flows": {M1, M2, M3, C6, cat, Al, H2}, "T_i": …}` |
 | `u_prev` | u(k−1) actually applied (`None` at k = 0) |
 | `p` | Parameters p(k): V, rate constants … (read only) |
@@ -287,7 +290,8 @@ There is one row per step k = 0 … N:
 | `C_M1` … `C_Al` | Species concentrations (mol/L) |
 | `P0` … `B011` | Moments of the chain-length distribution |
 | `T` | Reactor temperature (°F) |
-| `Mn`, `Mw`, `PDI`, `ML` | Molecular weights (g/mol), dispersity, Mooney viscosity |
+| `Mn`, `Mw`, `PDI`, `ML` | Molecular weights (g/mol), dispersity, Mooney viscosity (true values) |
+| `ML_meas`, `Mw_meas`, `Mn_meas`, `X_M1_meas`, `X_M3_meas`, `T_meas`, `PR_meas` | Measured values (with noise when on); blank for a variable the case does not measure |
 | `PR`, `polymer_conc` | Polymerization rate (lb/hr), polymer concentration (g/L) |
 | `wt_ethylene`, `wt_propylene`, `wt_diene`, `X_M1`, `X_M3` | Composition (wt %) |
 | `conv_M1` … `conv_M3` | Monomer conversion (fraction) |

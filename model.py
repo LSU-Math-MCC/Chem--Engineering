@@ -80,6 +80,21 @@ L_S_PER_FT3_HR = L_PER_FT3 / 3600.0
 # Reactor temperature range where the density correlation holds (deg F).
 T_RANGE = (-200.0, 450.0)
 
+# Measured variables (config["measure"]); the order fixes the noise draws, so
+# a variable gets the same noise in case 1 and case 2. X_M1 is X_C2 (ethylene
+# in the C2 + C3 part), X_M3 is X_diene. T noise is in deg F, the others are
+# a fraction of the value.
+MEAS_KEYS = ["ML", "Mw", "Mn", "X_M1", "X_M3", "T", "PR"]
+MEAS_CASES = {
+    1: ["ML", "X_M1", "X_M3", "T", "PR"],
+    2: ["ML", "Mw", "Mn", "X_M1", "X_M3", "T", "PR"],
+}
+MEAS_ABSOLUTE = {"T"}
+# Physical range of each measurement: a noisy reading is clipped to it (an
+# analyzer cannot report a negative Mw or more than 100 wt %). T is not clipped.
+MEAS_LIMITS = {"ML": (0.0, np.inf), "Mw": (0.0, np.inf), "Mn": (0.0, np.inf), "PR": (0.0, np.inf),
+               "X_M1": (0.0, 100.0), "X_M3": (0.0, 100.0), "T": (-np.inf, np.inf)}
+
 PROPERTY_NAMES = [
     "live_chains", "dead_chains",
     "polymer_conc",
@@ -234,18 +249,54 @@ def properties(states, u, p):
 
 
 # ---------------------------------------------------------------------------
+# Measurements and noise
+# ---------------------------------------------------------------------------
+
+def noise_draws(cfg):
+    """e[k, i] ~ N(0, 1) for step k = 0..N and MEAS_KEYS[i] (zeros when off).
+
+    Drawn once from the seed, so step k gets the same noise in open and
+    closed loop, and the same seed gives the same run.
+    """
+    m = cfg["measure"]
+    shape = (cfg["N"] + 1, len(MEAS_KEYS))
+    if not m["noise"]:
+        return np.zeros(shape)
+    return np.random.default_rng(m["seed"]).standard_normal(shape)
+
+
+def measure(props, T, e, m):
+    """The measured variables of case m["case"] with noise row e:
+    T + sigma e (deg F) for T, value (1 + sigma e) for the rest, clipped to
+    MEAS_LIMITS. NaN (no polymer yet) stays NaN."""
+    out = {}
+    for key in MEAS_CASES[m["case"]]:
+        true = T if key == "T" else props[key]
+        noise = m["sigma"][key] * e[MEAS_KEYS.index(key)]
+        value = true + noise if key in MEAS_ABSOLUTE else true * (1.0 + noise)
+        out[key] = float(np.clip(value, *MEAS_LIMITS[key]))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # CSV output
 # ---------------------------------------------------------------------------
 
-def write_csv(path, t, X, U, P):
-    """One row per step k: time, inputs u(k), states(k), properties(k).
+def write_csv(path, t, X, U, P, noise=None, m=None):
+    """One row per step k: time, inputs u(k), states(k), properties(k), and
+    the measurements <name>_meas.
 
     F is the outlet flow (ft3/hr) that follows from the inputs. The last row
     (k = N) has no u(N) of its own; it repeats u(N-1) so its properties can
-    still be evaluated.
+    still be evaluated. States and properties are the true values; the _meas
+    columns are measure() with noise[k] (case m, default case 1 without
+    noise), blank for variables the case does not measure.
     """
+    m = m or {"case": 1, "noise": False, "seed": 0, "sigma": {key: 0.0 for key in MEAS_KEYS}}
+    if noise is None:
+        noise = np.zeros((len(t), len(MEAS_KEYS)))
     header = (["step", "t", "F", "T_i"] + [f"flow_{key}" for key in STREAM_KEYS]
-              + STATE_VARS + PROPERTY_NAMES)
+              + STATE_VARS + PROPERTY_NAMES + [f"{key}_meas" for key in MEAS_KEYS])
 
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
@@ -254,9 +305,11 @@ def write_csv(path, t, X, U, P):
             u = U[min(k, len(U) - 1)]
             p = P[min(k, len(P) - 1)]
             props = properties(X[k], u, p)
+            meas = measure(props, X[k][STATE_VARS.index("T")], noise[k], m)
             row = ([k, t[k], operating_point(u, p)[2], u["T_i"]]
                    + [u["flows"][key] for key in STREAM_KEYS]
-                   + list(X[k]) + [props[name] for name in PROPERTY_NAMES])
+                   + list(X[k]) + [props[name] for name in PROPERTY_NAMES]
+                   + [meas.get(key, np.nan) for key in MEAS_KEYS])
             writer.writerow(["" if isinstance(v, float) and np.isnan(v) else f"{v:.10g}"
                              if isinstance(v, float) else v for v in row])
 
@@ -338,6 +391,16 @@ DEFAULT_CONFIG = {
     # Closed loop: name of a file in controllers/ whose control(obs) picks
     # u(k) every step (see Reactor below); None = open loop, u(k) from events.
     "controller": None,
+    # Measurements: case 1 measures ML, X_C2 (X_M1), X_diene (X_M3), T, PR;
+    # case 2 also Mw and Mn. With noise on, each gets e ~ N(0, 1) per step
+    # from the seed: T + sigma e (sigma in deg F), value (1 + sigma e) for the
+    # rest (sigma a fraction). Only these get noise. The controller sees the
+    # measured values; results.csv keeps the true ones and adds <name>_meas.
+    "measure": {
+        "case": 1, "noise": False, "seed": 0,
+        "sigma": {"ML": 0.02, "Mw": 0.02, "Mn": 0.02, "X_M1": 0.02, "X_M3": 0.02,
+                  "T": 1.0, "PR": 0.02},
+    },
     "events": [
         # hydrogen feed tripled -> shorter chains
         {"start": 50, "end": None, "target": "flow.H2", "mode": "multiply", "value": 3.0},
@@ -456,6 +519,29 @@ def _validate(cfg):
                 raise ValueError(f"{label}: end step is before the start step.")
         else:
             e["end"] = None
+
+    # Older saved configs have no measure entry: case 1, no noise.
+    cfg.pop("Mw_noise", None)
+    m = cfg.get("measure") or {}
+    default = DEFAULT_CONFIG["measure"]
+    case = _number(m.get("case", default["case"]), "Measurement case")
+    if case not in MEAS_CASES:
+        raise ValueError(f"Measurement case must be {' or '.join(map(str, MEAS_CASES))}.")
+    noise = m.get("noise", False)
+    if noise not in (True, False, 0, 1):
+        raise ValueError("Measurement noise must be on or off (true or false).")
+    seed = _number(m.get("seed", 0), "Noise seed", positive=True)
+    if seed != int(seed):
+        raise ValueError("Noise seed must be a whole number.")
+    sigma = m.get("sigma") or {}
+    for key in sigma:
+        if key not in MEAS_KEYS:
+            raise ValueError(f"Unknown measured variable {key!r} in sigma; use one of {', '.join(MEAS_KEYS)}.")
+    cfg["measure"] = {
+        "case": int(case), "noise": bool(noise), "seed": int(seed),
+        "sigma": {key: _number(sigma.get(key, default["sigma"][key]), f"Noise sigma for {key}", positive=True)
+                  for key in MEAS_KEYS},
+    }
 
     name = cfg.get("controller") or None
     if name is not None:
@@ -602,9 +688,15 @@ class Reactor:
 
     observe() returns a dict:
         k, t, dt, N   step number, time (s), step length, total steps
-        state         {state name: value} at t_k (concentrations, moments, T)
+        meas          the measured variables of config["measure"]["case"]
+                      (case 1: ML, X_M1, X_M3, T, PR; case 2: + Mw, Mn),
+                      with noise when it is on
+        state         {state name: value} at t_k (concentrations, moments, T);
+                      T is the measured T
         props         polymer properties at t_k (Mn, Mw, PDI, PR, ML, wt_*,
-                      conv_*, ...), as in results.csv
+                      conv_*, ...), with the measured values for the
+                      variables in meas; the rest are exact
+        state_true, props_true   the same without noise, as in results.csv
         u_planned     u(k) from u0 + step changes: {"flows": {...}, "T_i": ...}
         u_prev        u(k-1) actually applied (None at k = 0)
         p             parameters p(k) (read only; changes are ignored)
@@ -618,6 +710,8 @@ class Reactor:
         self.t = [0.0]
         self.X = [initial_state(self.config)]
         self.U, self.P = [], []
+        self.noise = noise_draws(self.config)
+        self.measure = self.config["measure"]
 
     @property
     def done(self):
@@ -633,10 +727,16 @@ class Reactor:
         # Properties at t_k use the inputs that produced this state (u(k-1)),
         # falling back to the plan before the first step.
         u_now = self.U[-1] if self.U else u_planned
+        state = self.state
+        props = properties(self.X[-1], u_now, p)
+        meas = measure(props, state["T"], self.noise[self.k], self.measure)
         return {
             "k": self.k, "t": self.t[-1], "dt": self.dt, "N": self.N,
-            "state": self.state,
-            "props": properties(self.X[-1], u_now, p),
+            "meas": meas,
+            "state": {**state, **{key: v for key, v in meas.items() if key in state}},
+            "props": {**props, **{key: v for key, v in meas.items() if key in props}},
+            "state_true": state,
+            "props_true": props,
             "u_planned": u_planned,
             "u_prev": deepcopy(self.U[-1]) if self.U else None,
             "p": p,
@@ -661,7 +761,7 @@ class Reactor:
         return np.array(self.t), np.array(self.X), self.U, self.P
 
     def write_csv(self, path="results.csv"):
-        write_csv(path, *self.results())
+        write_csv(path, *self.results(), self.noise, self.measure)
 
 
 def run(config=DEFAULT_CONFIG, csv_path="results.csv", controller=None):
@@ -678,7 +778,7 @@ def run(config=DEFAULT_CONFIG, csv_path="results.csv", controller=None):
     if controller is None:
         x0, U, P, dt = build_inputs(cfg)
         t, X = simulate(x0, U, P, dt)
-        write_csv(csv_path, t, X, U, P)
+        write_csv(csv_path, t, X, U, P, noise_draws(cfg), cfg["measure"])
         return t, X, U, P
 
     if reset is not None:

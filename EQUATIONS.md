@@ -298,6 +298,24 @@ $M_w = \alpha\,M_{w,0}$, where $M_{w,0} = P_2^m / P_1^m$ is the unadjusted value
 and $PDI = M_w / M_n$ as before. $k_b = 0$, $\beta = 1$ (the defaults) give the
 old behavior. α is written to `results.csv` as `LCB_alpha`.
 
+**Measurements and noise** (`measure`, noise off by default). Only the measured
+variables get noise:
+
+| Case | Measured |
+|---|---|
+| 1 | ML, $X_{C2}$ (`X_M1`), $X_{diene}$ (`X_M3`), T, PR |
+| 2 | ML, $M_w$, $M_n$, $X_{C2}$, $X_{diene}$, T, PR |
+
+With $e_k \sim N(0, 1)$ drawn from `seed` for each variable and step,
+
+$$y_{meas}(k) = y(k)\,(1 + \sigma_y\,e_k), \qquad T_{meas}(k) = T(k) + \sigma_T\,e_k$$
+
+with $\sigma_y$ a fraction and $\sigma_T$ in °F. A reading is clipped to its physical range
+(ML, $M_w$, $M_n$, PR ≥ 0; $X_{C2}$, $X_{diene}$ between 0 and 100 wt %); T is not clipped.
+Before there is polymer the polymer readings are blank (NaN). The controller sees the measured
+values; PDI and every other property stay exact. The reactor states are not
+affected. `results.csv` keeps the true values and adds `<name>_meas` columns.
+
 ---
 
 ## 9. Default parameters
@@ -316,6 +334,7 @@ are in mol/L and time is in s. The second number on the rate-constant sheet is E
 | Heats of reaction −ΔH | M1 1400, M2 950, M3 700 Btu/lb; ΔH_mix = 1.0e6 Btu/hr |
 | Mooney | a = 2e-4, b = 1.3e-4 |
 | Long chain branching | k_b = 0, β = 1 (off) |
+| Measurements | case 1; noise off; σ = 0.02 (2 %) for ML, Mw, Mn, X_C2, X_diene, PR and 1 °F for T; seed 0 |
 | Arrhenius | Tr = 90 °F; E = 1000 °R for k11, k12, k13, k21, k22, k31; E = 0 for the rest |
 | Critical C_C1 | c* = 1e-7 mol/L |
 | Initial conditions | T0 = 45 °F; empty reactor (all concentrations 0) |

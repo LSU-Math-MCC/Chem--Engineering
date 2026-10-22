@@ -35,7 +35,9 @@ Two layouts are accepted; the header row tells them apart.
 
 Inputs are named as in results.csv or the dashboard: flow_M1 / flow.M1 / M1
 / Ethylene, T_i, T0, V, H_mix, k11, Mw.M1, neg_dH.M1, ML_a, ML_b, N, dt,
-the Arrhenius data T_ref and E.k11, starting concentrations C_M1 ...
+the Arrhenius data T_ref and E.k11, the measurements measure.case (1/2),
+measure.noise (1/0), measure.seed and measure.sigma.ML ... (starting values
+only), starting concentrations C_M1 ...
 C_Al (or init.C_M1), and controller (a file name in controllers/, or none);
 the last four are starting values only.
 Text after a comma or bracket in a header is ignored, so "Ethylene, lb/hr"
@@ -64,7 +66,8 @@ def _clean(name):
 
 def resolve(name, p0):
     """Where an input lives in the config: ("flow", key), ("T_i",), ("p", key),
-    ("p_nested", group, key) or ("run", "N"/"dt"). Raises ValueError."""
+    ("p_nested", group, key), ("measure", key), ("measure_sigma", key) or
+    ("run", "N"/"dt"). Raises ValueError."""
     raw = _clean(name)
     low = raw.lower()
     if low in ("n", "steps"):
@@ -88,6 +91,15 @@ def resolve(name, p0):
     if low in STREAM_ALIASES:
         return ("flow", STREAM_ALIASES[low])
     key = raw[2:] if raw.startswith("p.") else raw
+    m = re.fullmatch(r"measure[._](case|noise|seed)", key, flags=re.I)
+    if m:
+        return ("measure", m.group(1).lower())
+    m = re.fullmatch(r"measure[._]sigma[._](\w+)", key, flags=re.I)
+    if m:
+        k = next((k for k in ("ML", "Mw", "Mn", "X_M1", "X_M3", "T", "PR") if k.lower() == m.group(1).lower()), None)
+        if k is None:
+            raise ValueError(f"Unknown measured variable in {name!r}.")
+        return ("measure_sigma", k)
     m = re.fullmatch(r"(Mw|neg_dH)[._](M[123])", key, flags=re.I)
     if m:
         group = "Mw" if m.group(1).lower() == "mw" else "neg_dH"
@@ -140,6 +152,10 @@ def _set_start(cfg, where, value):
         cfg["p0"][where[1]] = value
     elif where[0] == "x0":
         cfg.setdefault("x0", {})[where[1]] = value
+    elif where[0] == "measure":
+        cfg.setdefault("measure", {})[where[1]] = value
+    elif where[0] == "measure_sigma":
+        cfg.setdefault("measure", {}).setdefault("sigma", {})[where[1]] = value
     else:
         cfg["p0"].setdefault(where[1], {})[where[2]] = value
 
