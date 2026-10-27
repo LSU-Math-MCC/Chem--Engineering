@@ -6,7 +6,7 @@ from torchdiffeq import odeint
 import matplotlib.pyplot as plt
 
 # Import your ODEFunc directly from your training file!
-from NODE_with_multiple_csv_data import ODEFunc, input_vars, output_vars
+from neural_ode_code_taking_csv import ODEFunc, input_vars, output_vars
 
 # Load the saved checkpoint
 checkpoint = torch.load('neural_ode_reactor_model.pth')
