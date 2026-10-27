@@ -1,3 +1,5 @@
+"""Framework from Google Gemini made to match the neural_ode_code_taking_csv.py output pth file"""
+
 import torch
 import pandas as pd
 from torchdiffeq import odeint
