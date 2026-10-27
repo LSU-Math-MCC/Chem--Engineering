@@ -48,11 +48,11 @@ for df in raw_datasets:
         'df': df
     })
 
-t = torch.tensor(t_np, dtype=torch.float32)
+latent_layer_size = 36
 
 # 3. Define the Neural Network ODE Function with all External Inputs
 class ODEFunc(nn.Module):
-    def __init__(self, latent_dim=36, input_dim=(len(input_vars)), output_dim=len(output_vars)):
+    def __init__(self, latent_dim=latent_layer_size, input_dim=(len(input_vars)), output_dim=len(output_vars)):
         super(ODEFunc, self).__init__()
         self.latent_dim = latent_dim
 
@@ -90,7 +90,7 @@ class ODEFunc(nn.Module):
         return self.ode_net(h_aug)
 
 # 4. Initialize Model, Optimizer, and Loss
-func = ODEFunc(latent_dim=36, input_dim=(len(input_vars)), output_dim=len(output_vars))
+func = ODEFunc(latent_dim=latent_layer_size, input_dim=(len(input_vars)), output_dim=len(output_vars))
 optimizer = optim.Adam(func.parameters(), lr=0.005, weight_decay=1e-5)
 criterion = nn.MSELoss()
 
@@ -157,7 +157,7 @@ checkpoint = {
     'y_std': y_std,
     'input_vars': input_vars,
     'output_vars': output_vars,
-    'latent_dim': 36
+    'latent_dim': latent_layer_size
 }
 
 torch.save(checkpoint, 'neural_ode_reactor_model.pth')
