@@ -61,13 +61,13 @@ class Handler(BaseHTTPRequestHandler):
             with run_lock:
                 data = {"source": CSV_PATH.name, "columns": read_csv(CSV_PATH),
                         "config": state["config"], "defaults": model.DEFAULT_CONFIG,
-                        "controllers": model.list_controllers(), "editable": True}
+                        "controllers": model.controller_info(), "editable": True}
             self._send(200, render_page(data), "text/html; charset=utf-8")
         elif path == "/results.csv":
             self._send(200, CSV_PATH.read_bytes(), "text/csv")
         elif path == "/api/controllers":
-            # Controller files in controllers/ (closed loop), for the dashboard's dropdown.
-            self._json(200, {"controllers": model.list_controllers()})
+            # Controller files in controllers/ with their settings, for the dashboard.
+            self._json(200, {"controllers": model.controller_info()})
         else:
             self._send(404, "Not found", "text/plain")
 

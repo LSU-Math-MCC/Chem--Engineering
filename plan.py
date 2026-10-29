@@ -38,7 +38,8 @@ Inputs are named as in results.csv or the dashboard: flow_M1 / flow.M1 / M1
 the Arrhenius data T_ref and E.k11, the measurements measure.case (1/2),
 measure.noise (1/0), measure.seed and measure.sigma.ML ... (starting values
 only), starting concentrations C_M1 ...
-C_Al (or init.C_M1), and controller (a file name in controllers/, or none);
+C_Al (or init.C_M1), and controller (a file name in controllers/, a+b for
+several run in order, or none);
 the last four are starting values only.
 Text after a comma or bracket in a header is ignored, so "Ethylene, lb/hr"
 works.
@@ -74,7 +75,7 @@ def resolve(name, p0):
         return ("run", "N")
     if low in ("dt", "step size"):
         return ("run", "dt")
-    if low == "controller":
+    if low in ("controller", "controllers"):
         return ("run", "controller")
     if low in ("t_i", "ti", "inlet t", "inlet temperature"):
         return ("T_i",)

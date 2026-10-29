@@ -25,6 +25,7 @@ derivatives.py works in mol/L, L and s, so operating_point() converts the
 lb/hr and ft3 inputs; temperatures stay in deg F.
 """
 
+import ast
 import csv
 import importlib.util
 import re
@@ -388,9 +389,10 @@ DEFAULT_CONFIG = {
     # Starting concentrations (mol/L) by species, e.g. {"C_M1": 0.5};
     # species left out start at the feed composition. Base case: empty reactor.
     "x0": {key: 0.0 for key in INITIAL_KEYS},
-    # Closed loop: name of a file in controllers/ whose control(obs) picks
-    # u(k) every step (see Reactor below); None = open loop, u(k) from events.
-    "controller": None,
+    # Closed loop: files in controllers/ whose control(obs) picks u(k) every
+    # step, called in order (see chain() below). Each is {"name": ..., "params":
+    # {...}}; params override the file's UPPERCASE constants. [] = open loop.
+    "controllers": [],
     # Measurements: case 1 measures ML, X_C2 (X_M1), X_diene (X_M3), T, PR;
     # case 2 also Mw and Mn. With noise on, each gets e ~ N(0, 1) per step
     # from the seed: T + sigma e (sigma in deg F), value (1 + sigma e) for the
@@ -543,15 +545,32 @@ def _validate(cfg):
                   for key in MEAS_KEYS},
     }
 
-    name = cfg.get("controller") or None
-    if name is not None:
-        name = str(name).strip()
+    # Older configs and plan CSVs name one controller ("a+b" for several) under
+    # "controller"; when present it replaces the list.
+    if "controller" in cfg:
+        names = str(cfg.pop("controller") or "").replace(";", "+").split("+")
+        cfg["controllers"] = [{"name": n} for n in names if n.strip() and n.strip().lower() != "none"]
+    entries = cfg.get("controllers") or []
+    if not isinstance(entries, list):
+        raise ValueError("controllers must be a list.")
+    cfg["controllers"] = []
+    for i, entry in enumerate(entries, start=1):
+        if isinstance(entry, str):
+            entry = {"name": entry}
+        name = str(entry.get("name") or "").strip()
         if name.endswith(".py"):
             name = name[:-3]
         if name not in list_controllers():
             raise ValueError(f"Unknown controller {name!r}: put {name}.py in the controllers folder "
                              f"(available: {', '.join(list_controllers()) or 'none'}).")
-    cfg["controller"] = name
+        tunable = controller_params(name)
+        params = entry.get("params") or {}
+        for key in params:
+            if key not in tunable:
+                raise ValueError(f"Controller {i} ({name}): unknown setting {key!r}; use "
+                                 f"{', '.join(tunable) or 'none (the file has no UPPERCASE number constants)'}.")
+        cfg["controllers"].append({"name": name, "params": {
+            key: _number(value, f"Controller {i} ({name}) setting {key}") for key, value in params.items()}})
     return cfg
 
 
@@ -624,6 +643,7 @@ def build_inputs(config=DEFAULT_CONFIG):
 
 CONTROLLER_DIR = Path(__file__).with_name("controllers")
 _CONTROLLER_NAME = re.compile(r"[A-Za-z0-9_]+")
+_PARAM_NAME = re.compile(r"[A-Z][A-Z0-9_]*")
 
 
 def list_controllers():
@@ -634,9 +654,59 @@ def list_controllers():
                   if _CONTROLLER_NAME.fullmatch(f.stem) and not f.stem.startswith("_"))
 
 
-def load_controller(name):
-    """(control, reset) from controllers/<name>.py. The file is loaded fresh
-    for every run, so edits are picked up and module state starts clean."""
+def controller_params(name):
+    """{NAME: value} of the module-level UPPERCASE number constants in
+    controllers/<name>.py (e.g. SETPOINT = 110.0), read without running the
+    file. These are the settings a run config may override."""
+    if not _CONTROLLER_NAME.fullmatch(str(name)) or name not in list_controllers():
+        raise ValueError(f"Unknown controller {name!r}.")
+    try:
+        tree = ast.parse((CONTROLLER_DIR / f"{name}.py").read_text(encoding="utf-8"))
+    except SyntaxError as exc:
+        raise ValueError(f"controllers/{name}.py line {exc.lineno}: {exc.msg}") from None
+    params = {}
+    for node in tree.body:
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1):
+            continue
+        target, value = node.targets[0], node.value
+        # SETPOINT = 110.0 and T_I_MIN, T_I_MAX = -80.0, 40.0
+        if isinstance(target, ast.Name):
+            pairs = [(target, value)]
+        elif isinstance(target, ast.Tuple) and isinstance(value, ast.Tuple) and len(target.elts) == len(value.elts):
+            pairs = zip(target.elts, value.elts)
+        else:
+            continue
+        for t, v in pairs:
+            if not (isinstance(t, ast.Name) and _PARAM_NAME.fullmatch(t.id)):
+                continue
+            try:
+                number = ast.literal_eval(v)
+            except ValueError:
+                continue
+            if isinstance(number, (int, float)) and not isinstance(number, bool):
+                params[t.id] = number
+    return params
+
+
+def controller_info():
+    """[{"name", "doc", "params"}] for each controller file, for the dashboard.
+    doc is the first paragraph of the file's docstring."""
+    info = []
+    for name in list_controllers():
+        try:
+            params = controller_params(name)
+            doc = ast.get_docstring(ast.parse((CONTROLLER_DIR / f"{name}.py").read_text(encoding="utf-8"))) or ""
+            doc = " ".join(doc.strip().split("\n\n")[0].split())
+        except ValueError as exc:
+            params, doc = {}, str(exc)
+        info.append({"name": name, "doc": doc, "params": params})
+    return info
+
+
+def load_controller(name, params=None):
+    """(control, reset) from controllers/<name>.py, with params ({NAME: value})
+    set over its constants. The file is loaded fresh for every run, so edits
+    are picked up and module state starts clean."""
     if not _CONTROLLER_NAME.fullmatch(str(name)) or name not in list_controllers():
         raise ValueError(f"Unknown controller {name!r}.")
     path = CONTROLLER_DIR / f"{name}.py"
@@ -645,6 +715,8 @@ def load_controller(name):
     spec.loader.exec_module(module)
     if not callable(getattr(module, "control", None)):
         raise ValueError(f"controllers/{name}.py has no control(obs) function.")
+    for key, value in (params or {}).items():
+        setattr(module, key, value)
     return module.control, getattr(module, "reset", None)
 
 
@@ -764,25 +836,45 @@ class Reactor:
         write_csv(path, *self.results(), self.noise, self.measure)
 
 
+def chain(controls):
+    """One control(obs) from several [(name, control)], called in order every
+    step. Each sees obs["u_planned"] with the overrides of the ones before it
+    and may override any input again, so the last one to set an input wins."""
+    def control(obs):
+        u = obs["u_planned"]
+        for name, fn in controls:
+            seen = deepcopy(obs)
+            seen["u_planned"] = deepcopy(u)
+            try:
+                u = merge_inputs(u, fn(seen), obs["k"])
+            except ValueError as exc:
+                raise ValueError(f"{name}: {exc}") from None
+        return u
+    return control
+
+
 def run(config=DEFAULT_CONFIG, csv_path="results.csv", controller=None):
     """Simulate and write the CSV. Returns (t, X, U, P).
 
-    controller: None to use config["controller"] (a file in controllers/), or
+    controller: None to use config["controllers"] (files in controllers/), or
     a function control(obs) -> u override or None, called every step. With
     neither, the run is open loop: u(k) comes from u0 and the step changes.
     """
     cfg = validate_config(config)
-    reset = None
-    if controller is None and cfg["controller"]:
-        controller, reset = load_controller(cfg["controller"])
+    if controller is None and cfg["controllers"]:
+        controls = []
+        for entry in cfg["controllers"]:
+            control, reset = load_controller(entry["name"], entry["params"])
+            if reset is not None:
+                reset(deepcopy(cfg))
+            controls.append((entry["name"], control))
+        controller = chain(controls)
     if controller is None:
         x0, U, P, dt = build_inputs(cfg)
         t, X = simulate(x0, U, P, dt)
         write_csv(csv_path, t, X, U, P, noise_draws(cfg), cfg["measure"])
         return t, X, U, P
 
-    if reset is not None:
-        reset(deepcopy(cfg))
     sim = Reactor(cfg)
     while not sim.done:
         sim.step(controller(sim.observe()))
@@ -803,15 +895,18 @@ if __name__ == "__main__":
 
     from plan import load_plan
 
-    # python model.py [--controller NAME] [plan.csv]: the default inputs, or a
-    # plan CSV on top of them; --controller closes the loop with controllers/NAME.py.
+    # python model.py [--controller NAME[:KEY=VALUE,...]]... [plan.csv]: the
+    # default inputs, or a plan CSV on top of them; each --controller adds
+    # controllers/NAME.py to the loop (in order), optionally with settings.
     args = sys.argv[1:]
-    controller_name = None
-    if "--controller" in args:
+    controllers = []
+    while "--controller" in args:
         i = args.index("--controller")
         if i + 1 >= len(args):
             sys.exit("--controller needs a name, e.g. --controller hold_plan")
-        controller_name = args[i + 1]
+        name, _, settings = args[i + 1].partition(":")
+        params = dict(pair.split("=", 1) for pair in settings.split(",") if "=" in pair)
+        controllers.append({"name": name, "params": params})
         del args[i:i + 2]
     config = DEFAULT_CONFIG
     if args:
@@ -819,11 +914,12 @@ if __name__ == "__main__":
         config, summary = load_plan(plan_path.read_text(encoding="utf-8-sig"), DEFAULT_CONFIG, plan_path.name)
         config = validate_config(config)
         print(f"Plan {plan_path.name}: {summary}")
-    if controller_name:
-        config = dict(validate_config(config), controller=controller_name)
+    if controllers:
+        config = dict(validate_config(config), controllers=controllers)
     config = validate_config(config)
-    if config["controller"]:
-        print(f"Closed loop: controllers/{config['controller']}.py decides u(k) every step")
+    for entry in config["controllers"]:
+        settings = ", ".join(f"{k}={v:g}" for k, v in entry["params"].items())
+        print(f"Closed loop: controllers/{entry['name']}.py" + (f" ({settings})" if settings else ""))
     t, X, U, P = run(config, "results.csv")
     Path("results_config.json").write_text(json.dumps(validate_config(config), indent=2), encoding="utf-8")
     last = properties(X[-1], U[-1], P[-1])

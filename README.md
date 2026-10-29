@@ -116,7 +116,7 @@ A run is described by one JSON-style dict (see `DEFAULT_CONFIG` in `model.py`):
 | `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants (k₀ at `T_ref`), `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`, the long chain branching constants `LCB_kb` and `LCB_beta`, the critical catalyst concentration `CC1_crit` (mol/L), and the Arrhenius data `T_ref` (°F) and `E` (°R, one per rate constant). |
 | `x0` | Starting concentrations (mol/L) by species, e.g. `{"C_M1": 0.5}`. Species left out start at the feed composition. The default sets all seven to 0 (empty reactor). |
 | `events` | Step changes applied on top of `u0`/`p0` (see below). |
-| `controller` | Name of a file in `controllers/` for closed loop, or `null` for open loop. |
+| `controllers` | Closed loop: a list of `{"name": file in controllers/, "params": {SETTING: value}}`, run in order every step; `[]` for open loop. The older `"controller": "name"` is still accepted. |
 | `measure` | What is measured and its noise; see [Measurements and noise](#measurements-and-noise). |
 
 Each event has `start` and `end` (steps, where `end: null` means until the
@@ -245,7 +245,7 @@ Hydrogen / H2. The other inputs are `T_i`, `T0`, `V`, `H_mix`, the rate constant
 - **Starting concentrations:** `C_M1` … `C_Al` (or `init.C_M1`).
 - **Measurements:** `measure.case`, `measure.noise`, `measure.seed`,
   `measure.sigma.ML` … `measure.sigma.T`.
-- **Controller:** `controller,my_controller` (or `none`).
+- **Controller:** `controller,my_controller` (`a+b` for several, in order; or `none`).
 
 These are starting values only, so they can't be step changes:
 
@@ -289,9 +289,25 @@ def control(obs):           # called every step k, before that step is simulated
 
 Then pick it in any of three ways:
 
-- **Dashboard:** the **Closed-loop controller** dropdown in Simulation inputs.
+- **Dashboard:** **Add controller** under Closed-loop controllers in Simulation inputs.
 - **Command line:** `python model.py --controller my_controller [plan.csv]`.
 - **Plan CSV:** a `controller,my_controller` row in the list layout.
+
+**Settings.** Module-level UPPERCASE number constants (`SETPOINT = 110.0`,
+`T_I_MIN, T_I_MAX = -80.0, 40.0`) are the controller's settings. The dashboard
+shows a box for each one, and a changed value is set on the module before
+`reset()` for that run only; the file is not edited. In a config they are
+`{"name": "example_pi_temperature", "params": {"SETPOINT": 105}}`; on the
+command line, `--controller example_pi_temperature:SETPOINT=105,KC=1.2`.
+Constants computed from other constants at import time keep the file's values.
+
+**Several controllers.** A run can use any number of controllers (add more
+rows in the dashboard, repeat `--controller`, or write `a+b` in a plan CSV).
+They are called in order every step: each sees `obs["u_planned"]` with the
+inputs set by the ones before it, and the last one to set an input wins. For
+example, one controller can hold T with Tᵢ while another adjusts H2 for ML.
+**Reload files** in the dashboard picks up new controller files or changed
+defaults without restarting the server.
 
 `controllers/example_pi_temperature.py` is a worked example: a PI loop that
 holds the reactor T at 110 °F by moving Tᵢ. It isn't a recommended design, just

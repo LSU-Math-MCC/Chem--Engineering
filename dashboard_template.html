@@ -411,7 +411,7 @@ function mount(DATA, keepTime) {
   }
   // Closed loop: the controller may move the inputs every step, so the input
   // columns are not scanned for changes; one label marks the controller instead.
-  const controllerName = DATA.config && DATA.config.controller;
+  const controllerName = controllerLabel(DATA.config);
   if (!controllerName) {
     for (let k = 1; k <= N; k++) {
       const changes = [];
@@ -440,7 +440,7 @@ function mount(DATA, keepTime) {
     else if (controllerName) mark(e.start, name + (e.mode === "multiply" ? " ×" + e.value : " → " + e.value) + " (planned)");
     if ((isParam || controllerName) && e.end !== null && e.end !== undefined && e.end + 1 <= N) mark(e.end + 1, name + " back");
   }
-  if (controllerName) events.push({ k: 0, changes: [{ text: "Controller: " + controllerName }] });
+  if (controllerName) events.push({ k: 0, changes: [{ text: controllerName }] });
   events.sort((a, b) => a.k - b.k);
   const ratioText = c => {
     if (c.key === "T_i") return "→ " + fmt(c.b) + " °F";
@@ -750,7 +750,7 @@ function mount(DATA, keepTime) {
   const configItems = cfg => {
     if (!cfg || !Array.isArray(cfg.events)) return [];
     const at = k => "t = " + fmtTime(k * cfg.dt);
-    const items = cfg.controller ? [[0, at(0), "Controller: " + cfg.controller]] : [];
+    const items = controllerLabel(cfg) ? [[0, at(0), controllerLabel(cfg)]] : [];
     for (const e of cfg.events) {
       const target = String(e.target), isParam = target.startsWith("p.");
       const name = isParam ? target.slice(2) : target === "T_i" ? "Inlet T" : (STREAM_SHORT[target.slice(5)] || target.slice(5)) + " feed";
@@ -1003,6 +1003,15 @@ function mount(DATA, keepTime) {
   return () => sel;
 }
 
+// "Controller: a" or "Controllers: a (KC=1.2) → b" for a run config; "" in open loop.
+function controllerLabel(cfg) {
+  const list = (cfg && (cfg.controllers || (cfg.controller ? [{ name: cfg.controller }] : []))) || [];
+  if (!list.length) return "";
+  const one = c => c.name + (Object.keys(c.params || {}).length
+    ? " (" + Object.entries(c.params).map(([k, v]) => k + "=" + v).join(", ") + ")" : "");
+  return (list.length === 1 ? "Controller: " : "Controllers: ") + list.map(one).join(" → ");
+}
+
 function h(tag, attrs = {}, children = []) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
@@ -1036,6 +1045,8 @@ function initEditor(DATA) {
 
   let lastRun = "";
   let busy = false;
+  // Controller files: [{ name, doc, params: { NAME: default } }] (model.controller_info).
+  let CONTROLLERS = (DATA.controllers || []).map(c => typeof c === "string" ? { name: c, doc: "", params: {} } : c);
 
   const field = (id, label, value, opts = {}) => {
     const input = h("input", { id, type: "text", inputmode: "decimal", autocomplete: "off", spellcheck: "false" });
@@ -1148,14 +1159,71 @@ function initEditor(DATA) {
       h("p", { class: "hint", id: "flow-note" }),
     ]);
 
-    const controllerSelect = h("select", { id: "in-controller" }, [h("option", { value: "" }, ["None (open loop)"])]
-      .concat((DATA.controllers || []).map(name => h("option", { value: name }, [name]))));
-    controllerSelect.value = cfg.controller && (DATA.controllers || []).includes(cfg.controller) ? cfg.controller : "";
+    const ctrlRows = h("div", { class: "events", id: "controllers" });
+    const addCtrlBtn = h("button", { class: "btn", type: "button", id: "add-controller" }, ["Add controller"]);
+    const reloadCtrlBtn = h("button", { class: "btn btn-quiet", type: "button", id: "reload-controllers",
+      title: "Read the controllers folder again, for new files or changed default settings." }, ["Reload files"]);
+    addCtrlBtn.disabled = !CONTROLLERS.length;
     const loop = h("fieldset", { class: "fs" }, [
-      h("legend", {}, ["Closed-loop controller"]),
-      h("p", { class: "hint" }, ["A controller is a file in the controllers folder. Every step, its control(obs) sees the reactor state and properties and can set any feed flow and the inlet temperature. Step changes become the planned inputs it is given. See controllers/hold_plan.py."]),
-      h("label", { class: "field", for: "in-controller" }, [h("span", {}, ["Controller"]), controllerSelect]),
+      h("legend", {}, ["Closed-loop controllers"]),
+      h("p", { class: "hint" }, ["A controller is a file in the controllers folder. Every step, its control(obs) sees the reactor state and properties and can set any feed flow and the inlet temperature. Step changes become the planned inputs it is given. See controllers/hold_plan.py. ",
+        "Several controllers run in order every step: each sees the inputs set by the ones above it, and the last to set an input wins. ",
+        "The settings are the file's UPPERCASE number constants; a changed value applies to this run only and does not edit the file."]),
+      ctrlRows,
+      h("div", { class: "event-line" }, [addCtrlBtn, reloadCtrlBtn]),
     ]);
+    if (!CONTROLLERS.length) ctrlRows.append(h("p", { class: "hint" }, ["No controller files found in the controllers folder."]));
+    function controllerRow(c) {
+      const id = "ctl" + (nextCtrlId++);
+      const select = h("select", { id: id + "-name" }, CONTROLLERS.map(info => h("option", { value: info.name }, [info.name])));
+      select.value = CONTROLLERS.some(info => info.name === c.name) ? c.name : CONTROLLERS[0].name;
+      const doc = h("p", { class: "hint" });
+      const params = h("div", { class: "fields cols-2" });
+      // Setting boxes for the chosen file: the run's value if it had one, else the file's default.
+      const showParams = (values = {}) => {
+        const info = CONTROLLERS.find(x => x.name === select.value);
+        doc.textContent = info.doc;
+        const keys = Object.keys(info.params);
+        params.replaceChildren(...(keys.length
+          ? keys.map(k => field(id + "-param-" + k, k, values[k] ?? info.params[k], { placeholder: "file: " + info.params[k] }))
+          : [h("p", { class: "hint", style: "grid-column: 1 / -1" }, ["This file has no UPPERCASE number constants to change."])]));
+      };
+      select.addEventListener("change", () => showParams());
+      const up = h("button", { class: "btn btn-quiet", type: "button", "aria-label": "Run this controller earlier" }, ["Move up"]);
+      const remove = h("button", { class: "btn btn-quiet", type: "button", "aria-label": "Remove this controller" }, ["Remove"]);
+      const row = h("div", { class: "event", "data-id": id }, [
+        h("div", { class: "event-line" }, [
+          h("label", { class: "field grow", for: id + "-name" }, [h("span", {}, ["Controller file"]), select]),
+          up, remove,
+        ]),
+        doc, params,
+      ]);
+      up.addEventListener("click", () => { if (row.previousElementSibling) row.after(row.previousElementSibling); refresh(); });
+      remove.addEventListener("click", () => { row.remove(); refresh(); });
+      ctrlRows.append(row);
+      showParams(c.params || {});
+    }
+    let nextCtrlId = 0;
+    const startCtrls = cfg.controllers || (cfg.controller ? [{ name: cfg.controller }] : []);
+    if (CONTROLLERS.length) startCtrls.forEach(controllerRow);
+    addCtrlBtn.addEventListener("click", () => {
+      controllerRow({ name: CONTROLLERS[0].name });
+      refresh();
+      ctrlRows.lastElementChild.querySelector("select").focus();
+    });
+    reloadCtrlBtn.addEventListener("click", async () => {
+      try {
+        const res = await fetch("/api/controllers");
+        const out = await res.json();
+        let current;
+        try { current = JSON.parse(snapshot()); } catch { current = cfg; }
+        CONTROLLERS = out.controllers || [];
+        build(current);
+        setStatus("Reloaded " + CONTROLLERS.length + " controller file" + (CONTROLLERS.length === 1 ? "" : "s") + ".", "pending");
+      } catch (err) {
+        setStatus("Could not reach the server. Check that python dashboard_server.py is still running, then try again.", "error");
+      }
+    });
 
     const meas = cfg.measure || DATA.defaults?.measure || { case: 1, noise: false, seed: 0, sigma: {} };
     const sigmaOf = k => (meas.sigma || {})[k] ?? (DATA.defaults?.measure?.sigma || {})[k] ?? (k === "T" ? 1 : 0.02);
@@ -1368,11 +1436,22 @@ function initEditor(DATA) {
         LCB_kb: num("in-p-LCB_kb"), LCB_beta: num("in-p-LCB_beta"),
       },
       x0: {},
-      controller: val("in-controller") || null,
+      controllers: [],
       measure: { case: Number(val("in-meas-case")), noise: val("in-meas-noise") === "on", seed: num("in-meas-seed"),
         sigma: Object.fromEntries(MEAS.map(([k]) => [k, num("in-meas-sigma-" + k)])) },
       events: [],
     };
+    // Only settings that differ from the file are sent, so the rest follow the file if it changes.
+    for (const row of document.querySelectorAll("#controllers .event")) {
+      const id = row.dataset.id, name = val(id + "-name");
+      const defaults = (CONTROLLERS.find(x => x.name === name) || { params: {} }).params;
+      const params = {};
+      for (const k of Object.keys(defaults)) {
+        const v = num(id + "-param-" + k);
+        if (v !== defaults[k]) params[k] = v;
+      }
+      cfg.controllers.push({ name, params });
+    }
     for (const [k] of INIT) if (val("in-x0-" + k) !== "") cfg.x0[k] = num("in-x0-" + k);
     for (const [k] of STREAMS) cfg.u0.flows[k] = num("in-flow-" + k);
     for (const [, keys] of PARAM_GROUPS) for (const k of keys) { cfg.p0[k] = num("in-p-" + k); cfg.p0.E[k] = num("in-E-" + k); }
