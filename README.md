@@ -2,14 +2,16 @@
 
 A dynamic simulation of a continuous stirred-tank reactor (CSTR) making EPDM
 rubber (ethylene–propylene–diene) with a Ziegler–Natta catalyst. The kinetics
-follow Cozewith (1988). The model tracks 37 states: 7 species
-concentrations, 30 moments of the chain-length distribution, and the reactor
-temperature. From those it reports the polymer properties a plant would watch:
+follow Cozewith (1988). The model tracks 36 states: 7 species
+concentrations, 28 moments of the chain-length distribution (4 zeroth, 12 first,
+12 second), and the reactor temperature. From those it reports the polymer properties a plant would watch:
 molecular weight, dispersity, composition, conversion, production rate and
-Mooney viscosity.
+Mooney viscosity. It can also report them as a plant would *measure* them, with
+optional noise (see [Measurements and noise](#measurements-and-noise)).
 
-You can run it from the command line or from an interactive dashboard, and you
-can plan a run (step changes, ramps, recorded plant data) in a CSV file.
+You can run it from the command line or from an interactive dashboard, plan a
+run (step changes, ramps, recorded plant data) in a CSV file, and close the loop
+with your own controller code.
 
 All the equations are in **[EQUATIONS.md](EQUATIONS.md)**.
 
@@ -29,10 +31,14 @@ press **Run simulation** to run it again.
 Other ways to run it:
 
 ```bash
-python model.py                       # default run -> results.csv + results_config.json
-python model.py plan_example.csv      # run a plan CSV instead (see below)
-python dashboard.py                   # results.csv -> dashboard.html (static, no editing)
+python model.py                            # default run -> results.csv + results_config.json
+python model.py my_plan.csv                # run a plan CSV instead (see below)
+python model.py --controller hold_plan     # closed loop with controllers/hold_plan.py
+python dashboard.py                        # results.csv -> dashboard.html (static, no editing)
 ```
+
+The dashboard server reloads the last saved `results_config.json` when it
+starts. Press **Reset to defaults** on the page to go back to `DEFAULT_CONFIG`.
 
 ---
 
@@ -40,7 +46,7 @@ python dashboard.py                   # results.csv -> dashboard.html (static, n
 
 | File | What it does |
 |---|---|
-| `derivatives.py` | The model equations: dy/dt for all 37 states (A.54–A.82, the dead-chain second moments, and the energy balance). |
+| `derivatives.py` | The model equations: dy/dt for all 36 states (A.54–A.82, the dead-chain second moments, and the energy balance). |
 | `model.py` | Runs the simulation. Turns lb/hr feeds into model units, steps through time, computes polymer properties, writes `results.csv`. Holds `DEFAULT_CONFIG`, the default run. |
 | `plan.py` | Reads a plan CSV and turns it into a run config. |
 | `controllers/` | Closed-loop controller files: `hold_plan.py` (template) and `example_pi_temperature.py` (example). |
@@ -48,8 +54,12 @@ python dashboard.py                   # results.csv -> dashboard.html (static, n
 | `dashboard.py` / `dashboard_template.html` | Builds the dashboard page. `dashboard.html` is a standalone snapshot. |
 | `results.csv` | Output of the last run: one row per step. |
 | `results_config.json` | The inputs that produced `results.csv`. |
-| `plan_example.csv`, `plan_timeline_example.csv`, `fake_plant_schedule.csv` | Example plan files. |
+| `EQUATIONS.md` | Every equation the simulator solves, and the default parameters. |
 | `cozewith88_model_36state.py` | An earlier standalone version of the model. The simulator does not use it. |
+| `neural_ode_code_taking_csv.py`, `prediction_model.py`, `nn_and_node_research.py` | Research scripts: a neural ODE trained on `results.csv` (inputs `T_i` and `flow_*`, outputs the `*_meas` columns), saved to `neural_ode_reactor_model.pth`, and a script that predicts a new run with it. Not used by the simulator; they need `torch`, `torchdiffeq`, `pandas` and `matplotlib`. |
+
+`.csv` and `.json` files are git-ignored, so plan files and results stay local.
+The plan examples below can be copied into a file.
 
 ---
 
@@ -66,20 +76,28 @@ config  ──►  build_inputs()  ──►  u(0..N-1), p(0..N-1), states(0)
                                         │
                                         ▼
                      properties(states(k), u(k), p(k))  ──►  results.csv
+                     measure(properties, T, noise)      ──►  *_meas columns
 ```
 
-- **u(k), the inputs:** the mass feed flow of each stream (lb/hr) and the inlet
-  temperature Tᵢ (°F). These are what an operator can change.
+- **u(k), the inputs:** the mass feed flow of each of the seven streams (lb/hr)
+  and the inlet temperature Tᵢ (°F). These are what an operator, or a
+  controller, can change every step.
 - **p(k), the parameters:** reactor volume V, rate constants, molecular weights,
-  heats of reaction, heat of mixing, and the Mooney constants a and b. A step
-  change can alter some of these too (V, ΔH_mix and the rate constants), for
-  example to imitate catalyst decay.
-- **Starting state:** by default the reactor starts full of the feed mixture at
-  temperature T0, with no active catalyst or polymer yet. You can give any
-  species its own starting concentration under *Initial conditions*.
+  heats of reaction, heat of mixing, the Mooney constants a and b, the
+  long chain branching constants, and the critical catalyst concentration. A
+  step change can alter some of these too (V, ΔH_mix and the rate constants),
+  for example to imitate catalyst decay.
+- **Starting state:** by default (the Grade 1 base case) the reactor starts
+  **empty**: every concentration 0, at T0 = 45 °F. Under *Initial conditions*
+  you can give any species its own starting concentration, or leave it blank
+  to start at the feed composition (the reactor full of feed).
 - **Rate constants:** each one follows the Arrhenius equation
   k = k₀·exp(−E·(1/T − 1/Tr)) at the current reactor temperature. Defaults
-  are E = 0 and Tr = 90 °F, which keeps every k constant.
+  are Tr = 90 °F, E = 1000 °R for the propagation constants (k11 … k31) and
+  E = 0 (constant k) for the rest.
+- **Long chain branching:** Mw can be scaled by a factor α once branching sets
+  in, controlled by `LCB_kb` and `LCB_beta`. The defaults (0 and 1) switch it off.
+  See [EQUATIONS.md](EQUATIONS.md), section 8.
 - **Feeds:** seven streams: ethylene (M1), propylene (M2), diene (M3), hexane
   solvent (C6), catalyst VCl₄ (fed in its inactive form), aluminum alkyl
   co-catalyst, and hydrogen.
@@ -95,14 +113,51 @@ A run is described by one JSON-style dict (see `DEFAULT_CONFIG` in `model.py`):
 |---|---|
 | `N`, `dt` | Number of steps and step length in seconds (default 150 × 10 s). |
 | `u0` | Starting inputs: `flows` (lb/hr per stream) and `T_i` (°F). |
-| `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants (k₀ at `T_ref`), `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`, the long chain branching constants `LCB_kb` and `LCB_beta`, and the Arrhenius data `T_ref` (°F) and `E` (°R, one per rate constant). |
-| `x0` | Starting concentrations (mol/L) by species, e.g. `{"C_M1": 0.5}`. Species left out start at the feed composition. |
+| `p0` | Parameters: `V` (ft³), `T0` (°F), rate constants (k₀ at `T_ref`), `Mw`, `neg_dH`, `H_mix`, `ML_a`, `ML_b`, the long chain branching constants `LCB_kb` and `LCB_beta`, the critical catalyst concentration `CC1_crit` (mol/L), and the Arrhenius data `T_ref` (°F) and `E` (°R, one per rate constant). |
+| `x0` | Starting concentrations (mol/L) by species, e.g. `{"C_M1": 0.5}`. Species left out start at the feed composition. The default sets all seven to 0 (empty reactor). |
 | `events` | Step changes applied on top of `u0`/`p0` (see below). |
-| `measure` | What is measured and its noise: `{"case": 1, "noise": false, "seed": 0, "sigma": {...}}`. Case 1 measures ML, X_C2 (`X_M1`), X_diene (`X_M3`), T and PR; case 2 also Mw and Mn. Only these get noise. With `noise` on, each gets e ~ N(0, 1) per step from `seed`: value · (1 + σ·e), with σ a fraction (default 0.02), and T + σ·e with σ in °F (default 1), clipped to the physical range (≥ 0; X between 0 and 100 %). The controller sees the measured values; `results.csv` keeps the true values and adds `<name>_meas` columns. In a plan CSV: `measure.case`, `measure.noise` (1/0), `measure.seed`, `measure.sigma.ML` … (starting values only). |
+| `controller` | Name of a file in `controllers/` for closed loop, or `null` for open loop. |
+| `measure` | What is measured and its noise; see [Measurements and noise](#measurements-and-noise). |
 
 Each event has `start` and `end` (steps, where `end: null` means until the
 end of the run), `target` (`flow.H2`, `T_i`, `p.k11` …), `mode` (`set` or
 `multiply`), and either a single `value` or a list of `values`, one per step.
+
+### Measurements and noise
+
+A plant can't see the true state; it reads instruments. The `measure` entry
+says which properties are measured and whether the readings are noisy:
+
+```python
+"measure": {"case": 1, "noise": False, "seed": 0,
+            "sigma": {"ML": 0.02, "Mw": 0.02, "Mn": 0.02, "X_M1": 0.02,
+                      "X_M3": 0.02, "T": 1.0, "PR": 0.02}}
+```
+
+| Case | Measured |
+|---|---|
+| 1 | ML, X_C2 (`X_M1`, ethylene in the C2 + C3 part), X_diene (`X_M3`), T, PR |
+| 2 | ML, Mw, Mn, X_C2, X_diene, T, PR |
+
+- **Only the measured variables get noise.** PDI, wt %, conversions and the
+  states stay exact.
+- **Noise** (when `noise` is on): each reading gets e ~ N(0, 1), a new draw each
+  step. Most readings are `value · (1 + σ·e)` with σ a fraction (0.02 = 2 %).
+  T is `T + σ·e` with σ in °F, since a percentage of a °F reading has no
+  physical meaning.
+- **Physical range:** readings are clipped to it: ML, Mw, Mn and PR ≥ 0;
+  X_C2 and X_diene between 0 and 100 %. T is not clipped. Before there is
+  any polymer, the polymer readings are blank.
+- **Seed:** the same seed gives exactly the same noise, so two controllers can
+  be compared on identical noise; change it for a different noise pattern. A
+  variable gets the same noise in case 1 and case 2.
+- **The plant never sees the noise.** It only changes what the controller is
+  given and the `_meas` columns. In closed loop, the inputs still change if
+  the controller reacts to noisy readings, as in a real plant.
+
+In a plan CSV, set these with `measure.case`, `measure.noise` (1 or 0),
+`measure.seed` and `measure.sigma.T`, `measure.sigma.ML` … (starting values
+only).
 
 ---
 
@@ -112,11 +167,14 @@ end of the run), `target` (`flow.H2`, `T_i`, `p.k11` …), `mode` (`set` or
 
 - **Simulation inputs:** run length, starting feeds and inlet temperature,
   initial conditions (T0 and the starting concentrations; leave a box blank to
-  use the feed composition, shown in grey), step changes, and all parameters.
-  Each rate constant has an **E** box next to it, and the Arrhenius section has
-  **Tr**. **Run simulation** reruns the model and updates
-  `results.csv` and `results_config.json`. **Load plan CSV…** fills the whole
-  form from a plan file.
+  use the feed composition, shown in grey), the closed-loop controller,
+  **Measurements and noise** (case, on/off, seed and each σ; the σ boxes for
+  Mw and Mn appear only in case 2), step changes, and all parameters,
+  including long chain branching (k_b, β). Each rate constant has an **E** box
+  next to it, and the Arrhenius section has **Tr**. **Run simulation** reruns
+  the model and updates `results.csv` and `results_config.json`. **Load plan
+  CSV…** fills the whole form from a plan file, and **Reset to defaults** goes
+  back to `DEFAULT_CONFIG`.
 - **Time slider and summary tiles:** pick any step. The tiles, the equations and
   the full data table all show values at that time.
 - **Changes during the run:** lists the step changes. When you've edited the
@@ -126,6 +184,12 @@ end of the run), `target` (`flow.H2`, `T_i`, `p.k11` …), `mode` (`set` or
 - **Charts:** the inputs u(k), temperature, polymerization rate, molecular
   weight, dispersity, composition, conversion, Mooney viscosity and chain counts.
   Hover to read values, or click to select a time.
+  - The inputs chart shows only inputs that change during the run (up to three),
+    as % of their starting value. Tᵢ is on the temperature chart.
+  - When noise is on, each measured variable gets a thinner, faded line in the
+    same colour as its true line, and a *Measured composition* chart shows
+    X_C2 and X_diene. In case 1 the molecular weight chart notes that Mw and Mn
+    are not measured.
 
 ---
 
@@ -166,8 +230,7 @@ step,H2,T_i,Catalyst
 - Each value holds until the next row. A blank cell keeps the previous value.
 - If the last row is past the end of the run, the run is lengthened to cover it.
 
-This layout suits recorded plant data or a schedule with ramps. For an example,
-see `fake_plant_schedule.csv`.
+This layout suits recorded plant data or a schedule with ramps.
 
 ### Input names
 
@@ -176,10 +239,13 @@ Any of these work: `flow_M1`, `flow.M1`, `M1`, `Ethylene`, `Ethylene, lb/hr`
 Propylene / M2, Diene / M3, Hexane / C6, Catalyst / cat, Aluminum / Al and
 Hydrogen / H2. The other inputs are `T_i`, `T0`, `V`, `H_mix`, the rate constants
 (`k11`, `k_tr1` …), `Mw.M1`–`Mw.M3`, `neg_dH.M1`–`neg_dH.M3`, `ML_a`, `ML_b`,
-`N` and `dt`. The list layout can also set:
+`LCB_kb`, `LCB_beta`, `CC1_crit`, `N` and `dt`. The list layout can also set:
 
 - **Arrhenius data:** `T_ref` (or `Tr`) and `E.k11`, `E.k_tr1` …
 - **Starting concentrations:** `C_M1` … `C_Al` (or `init.C_M1`).
+- **Measurements:** `measure.case`, `measure.noise`, `measure.seed`,
+  `measure.sigma.ML` … `measure.sigma.T`.
+- **Controller:** `controller,my_controller` (or `none`).
 
 These are starting values only, so they can't be step changes:
 
@@ -215,8 +281,8 @@ def reset(config):          # optional: called once before the run
     ...
 
 def control(obs):           # called every step k, before that step is simulated
-    T = obs["state"]["T"]                    # reactor temperature, deg F
-    Mn = obs["props"]["Mn"]                  # any property from results.csv
+    T = obs["meas"]["T"]                     # measured reactor temperature, deg F
+    ML = obs["meas"]["ML"]                   # measured Mooney viscosity (see "measure")
     h2 = obs["u_planned"]["flows"]["H2"]     # what the plan says for this step
     return {"flows": {"H2": h2 * 1.1}, "T_i": -35.0}   # or None to keep the plan
 ```
@@ -254,10 +320,10 @@ t, X, U, P = sim.results()             # or use the arrays directly
 | Key | Content |
 |---|---|
 | `k`, `t`, `dt`, `N` | Step number, time (s), step length (s), total steps |
-| `state` | All 37 states at t_k: `C_M1` … `C_Al`, the moments, and `T` (°F) |
-| `meas` | The measured variables of the case (case 1: ML, X_M1, X_M3, T, PR; case 2: + Mw, Mn), noisy when noise is on |
+| `meas` | The measured variables of the case (case 1: ML, X_M1, X_M3, T, PR; case 2: + Mw, Mn), noisy when noise is on. A realistic controller uses only these. |
+| `state` | All 36 states at t_k: `C_M1` … `C_Al`, the moments, and `T` (°F). `T` is the measured T. |
 | `props` | Mn, Mw, PDI, ML, PR, wt %, conversions …, with the measured values for the variables in `meas`; the rest are exact |
-| `state_true`, `props_true` | The same without noise (the `results.csv` columns); `state["T"]` is the measured T |
+| `state_true`, `props_true` | The same without noise (as in `results.csv`) |
 | `u_planned` | u(k) from the starting inputs and step changes: `{"flows": {M1, M2, M3, C6, cat, Al, H2}, "T_i": …}` |
 | `u_prev` | u(k−1) actually applied (`None` at k = 0) |
 | `p` | Parameters p(k): V, rate constants … (read only) |
@@ -290,14 +356,18 @@ There is one row per step k = 0 … N:
 | `C_M1` … `C_Al` | Species concentrations (mol/L) |
 | `P0` … `B011` | Moments of the chain-length distribution |
 | `T` | Reactor temperature (°F) |
-| `Mn`, `Mw`, `PDI`, `ML` | Molecular weights (g/mol), dispersity, Mooney viscosity (true values) |
-| `ML_meas`, `Mw_meas`, `Mn_meas`, `X_M1_meas`, `X_M3_meas`, `T_meas`, `PR_meas` | Measured values (with noise when on); blank for a variable the case does not measure |
-| `PR`, `polymer_conc` | Polymerization rate (lb/hr), polymer concentration (g/L) |
-| `wt_ethylene`, `wt_propylene`, `wt_diene`, `X_M1`, `X_M3` | Composition (wt %) |
+| `live_chains`, `dead_chains`, `polymer_conc` | Chain counts (mol/L), polymer concentration (g/L) |
+| `Mn`, `Mw`, `PDI`, `LCB_alpha` | Molecular weights (g/mol), dispersity, long chain branching factor α (1 = no branching) |
+| `wt_ethylene`, `wt_propylene`, `wt_diene` | Composition (wt % of polymer) |
+| `X_M1`, `X_M3` | X_C2 (ethylene in the C2 + C3 part) and X_diene (wt %) |
+| `PR`, `ML` | Polymerization rate (lb/hr), Mooney viscosity |
 | `conv_M1` … `conv_M3` | Monomer conversion (fraction) |
-| `live_chains`, `dead_chains` | Chain counts (mol/L) |
+| `ML_meas`, `Mw_meas`, `Mn_meas`, `X_M1_meas`, `X_M3_meas`, `T_meas`, `PR_meas` | Measured values (with noise when on). Blank for a variable the case does not measure (Mw, Mn in case 1) and before there is polymer. |
 
-The last row (k = N) has no input of its own, so it repeats u(N−1).
+All columns except `*_meas` are true values. The last row (k = N) has no input
+of its own, so it repeats u(N−1). Row k evaluates PR and the conversions with
+u(k), while the controller at step k sees them with u(k−1), the inputs that
+produced that state, so the two differ slightly at a step change.
 
 ---
 
