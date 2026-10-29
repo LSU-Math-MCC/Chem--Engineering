@@ -48,7 +48,7 @@ for df in raw_datasets:
         'df': df
     })
 
-latent_layer_size = 36  
+latent_layer_size = 24  
 
 # 3. Define the Neural Network ODE Function with all External Inputs
 class ODEFunc(nn.Module):
