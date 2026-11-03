@@ -13,7 +13,7 @@ I have also added Optuna hyperparameter optimization to the training process, al
 weight decay, and latent dimension size. The best hyperparameters found during the search will be used for the final training of the model.
 I also changed the code to once again run only one CSV file. I made other small changes such as reducing the Nodes in the code as well
 as made an optimization to the interpolation of the input features to make it more efficient. 
-I also added a progress report for the training loop
+I also added a progress report for the training loop. I also added the ability to take a random sample from the dataset
 """
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ output_vars = ['Mw_meas', 'Mn_meas', 'ML_meas', 'X_M1_meas', 'X_M3_meas', 'T_mea
 
 odf = pd.read_csv(csv_file).dropna(subset=output_vars).reset_index(drop=True)
 
-# Randomly sample 50% of the dataset, then sort by time 't' to preserve sequence order
+# Randomly sample a percentage of the dataset, then sort by time 't' to preserve sequence order
 df = odf.sample(frac=0.25, random_state=11).sort_values('t').reset_index(drop=True)
 
 # 2. Feature Scaling for both Inputs and Outputs
