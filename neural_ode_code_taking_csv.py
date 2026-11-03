@@ -28,13 +28,14 @@ import optuna
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 # 1. Configuration & Data Loading
-csv_file = 'results_grade1.csv'  # Add more CSV file paths here if needed
+csv_file = 'results.csv'  #change this
 input_vars = ['T_i', 'flow_M1', 'flow_M2', 'flow_M3', 'flow_C6', 'flow_cat', 'flow_Al', 'flow_H2']
 output_vars = ['Mw_meas', 'Mn_meas', 'ML_meas', 'X_M1_meas', 'X_M3_meas', 'T_meas', 'PR_meas']
 
 odf = pd.read_csv(csv_file).dropna(subset=output_vars).reset_index(drop=True)
 
 # Randomly sample a percentage of the dataset, then sort by time 't' to preserve sequence order
+# This may need to change once we start concatenating different CSV files together, but for now it is fine.
 df = odf.sample(frac=0.5, random_state=11).sort_values('t').reset_index(drop=True)
 
 # 2. Feature Scaling for both Inputs and Outputs
