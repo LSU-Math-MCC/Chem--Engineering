@@ -65,16 +65,16 @@ class ODEFunc(nn.Module):
         self.h0 = nn.Parameter(torch.zeros(1, latent_dim))
 
         self.ode_net = nn.Sequential(
-            nn.Linear(latent_dim + input_dim, 100),
+            nn.Linear(latent_dim + input_dim, 128),
             nn.Tanh(),
-            nn.Linear(100, 100),
+            nn.Linear(128, 128),
             nn.Tanh(),
-            nn.Linear(100, latent_dim)
+            nn.Linear(128, latent_dim)
         )
         self.readout = nn.Sequential(
-            nn.Linear(latent_dim, 50),
+            nn.Linear(latent_dim, 64),
             nn.Tanh(),
-            nn.Linear(50, output_dim)
+            nn.Linear(64, output_dim)
         )
         
     def set_run_context(self, t_tensor, x_tensor):
