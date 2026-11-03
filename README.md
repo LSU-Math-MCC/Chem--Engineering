@@ -56,7 +56,7 @@ starts. Press **Reset to defaults** on the page to go back to `DEFAULT_CONFIG`.
 | `results_config.json` | The inputs that produced `results.csv`. |
 | `EQUATIONS.md` | Every equation the simulator solves, and the default parameters. |
 | `cozewith88_model_36state.py` | An earlier standalone version of the model. The simulator does not use it. |
-| `neural_ode_code_taking_csv.py`, `prediction_model.py`, `nn_and_node_research.py` | Research scripts: a neural ODE trained on `results.csv` (inputs `T_i` and `flow_*`, outputs the `*_meas` columns), saved to `neural_ode_reactor_model.pth`, and a script that predicts a new run with it. Not used by the simulator; they need `torch`, `torchdiffeq`, `pandas` and `matplotlib`. |
+| `generate_training_data.py`, `neural_ode_code_taking_csv.py`, `prediction_model.py`, `nn_and_node_research.py` | Research scripts: simulator runs with random input changes written to `data/`, a neural ODE trained on them (inputs `T_i` and `flow_*`, outputs the `*_meas` columns) and saved to `neural_ode_reactor_model.pth`, and a script that predicts a new run with it. Run them in that order. Not used by the simulator; they need `torch`, `torchdiffeq`, `optuna`, `pandas` and `matplotlib`. |
 
 `.csv` and `.json` files are git-ignored, so plan files and results stay local.
 The plan examples below can be copied into a file.
