@@ -38,7 +38,7 @@ odf = pd.read_csv(csv_file).dropna(subset=output_vars).reset_index(drop=True)
 # Select frac to be what fraction of the dataset you want to use for training (e.g., 0.5 for 50%). 
 # A higher fraction will use more data for training, but will take longer to train.
 # This may need to change once we start concatenating different CSV files together, but for now it is fine.
-df = odf.sample(frac=1, random_state=11).sort_values('t').reset_index(drop=True)
+df = odf.sample(frac=.25, random_state=11).sort_values('t').reset_index(drop=True)
 
 # 2. Feature Scaling for both Inputs and Outputs
 x_raw = df[input_vars].values
@@ -123,7 +123,7 @@ def objective(trial):
     # Suggest hyperparameters to tune
     lr = trial.suggest_float("lr", 1e-4, 1e-2, log=True)
     weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-3, log=True)
-    latent_dim = trial.suggest_categorical("latent_dim", [12, 24, 36, 48])
+    latent_dim = trial.suggest_categorical("latent_dim", [12,24,36,48,60,72])
     
     # Initialize model with trial parameters
     func_trial = ODEFunc(latent_dim=latent_dim, input_dim=len(input_vars), output_dim=len(output_vars))
@@ -133,7 +133,7 @@ def objective(trial):
     criterion = nn.MSELoss()
     
     # Run a shorter training period for tuning efficiency
-    for epoch in range(1, 16):
+    for epoch in range(1, 26):
         optimizer_trial.zero_grad()
 
         pred_h = odeint(func_trial, func_trial.h0, t_tensor) 
@@ -153,7 +153,7 @@ def objective(trial):
 
 # Run the study (adjust n_trials based on your compute availability)
 study = optuna.create_study(direction="minimize")
-study.optimize(objective, n_trials=5)
+study.optimize(objective, n_trials=10)
 
 print("\nHyperparameter Search Complete!")
 best_params = study.best_params
