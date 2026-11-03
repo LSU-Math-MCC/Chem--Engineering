@@ -36,7 +36,7 @@ odf = pd.read_csv(csv_file).dropna(subset=output_vars).reset_index(drop=True)
 
 # Randomly sample a percentage of the dataset, then sort by time 't' to preserve sequence order
 # This may need to change once we start concatenating different CSV files together, but for now it is fine.
-df = odf.sample(frac=0.5, random_state=11).sort_values('t').reset_index(drop=True)
+df = odf.sample(frac=1, random_state=11).sort_values('t').reset_index(drop=True)
 
 # 2. Feature Scaling for both Inputs and Outputs
 x_raw = df[input_vars].values
