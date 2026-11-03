@@ -81,7 +81,6 @@
     "C_H2": 0.0,
     "C_Al": 0.0
   },
-  "controller": null,
   "measure": {
     "case": 2,
     "noise": true,
@@ -111,5 +110,6 @@
       "mode": "multiply",
       "value": 1.5
     }
-  ]
+  ],
+  "controllers": []
 }
