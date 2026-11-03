@@ -35,7 +35,7 @@ output_vars = ['Mw_meas', 'Mn_meas', 'ML_meas', 'X_M1_meas', 'X_M3_meas', 'T_mea
 odf = pd.read_csv(csv_file).dropna(subset=output_vars).reset_index(drop=True)
 
 # Randomly sample a percentage of the dataset, then sort by time 't' to preserve sequence order
-df = odf.sample(frac=0.25, random_state=11).sort_values('t').reset_index(drop=True)
+df = odf.sample(frac=0.5, random_state=11).sort_values('t').reset_index(drop=True)
 
 # 2. Feature Scaling for both Inputs and Outputs
 x_raw = df[input_vars].values
@@ -64,16 +64,16 @@ class ODEFunc(nn.Module):
         self.h0 = nn.Parameter(torch.zeros(1, latent_dim))
 
         self.ode_net = nn.Sequential(
-            nn.Linear(latent_dim + input_dim, 64),
+            nn.Linear(latent_dim + input_dim, 100),
             nn.Tanh(),
-            nn.Linear(64, 64),
+            nn.Linear(100, 100),
             nn.Tanh(),
-            nn.Linear(64, latent_dim)
+            nn.Linear(100, latent_dim)
         )
         self.readout = nn.Sequential(
-            nn.Linear(latent_dim, 32),
+            nn.Linear(latent_dim, 50),
             nn.Tanh(),
-            nn.Linear(32, output_dim)
+            nn.Linear(50, output_dim)
         )
         
     def set_run_context(self, t_tensor, x_tensor):
