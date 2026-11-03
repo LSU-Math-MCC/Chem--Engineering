@@ -36,7 +36,7 @@ odf = pd.read_csv(csv_file).dropna(subset=output_vars).reset_index(drop=True)
 
 # Randomly sample a percentage of the dataset, then sort by time 't' to preserve sequence order
 # Select frac to be what fraction of the dataset you want to use for training (e.g., 0.5 for 50%). 
-# A higher fraction will use more data for training and seems to result in lower loss, but will take longer to train.
+# A higher fraction will use more data for training, but will take longer to train.
 # This may need to change once we start concatenating different CSV files together, but for now it is fine.
 df = odf.sample(frac=1, random_state=11).sort_values('t').reset_index(drop=True)
 
