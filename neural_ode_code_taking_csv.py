@@ -231,23 +231,38 @@ def main():
         r2 = r2_per_output(predictions[split], y)
         print(f"R2 on {split}: mean {r2.mean():.3f} | " + ", ".join(f"{name} {v:.3f}" for name, v in zip(output_vars, r2)))
 
-    # 7. Inverse Scaling and Plotting for the first test run
-    output_index = 0  # Change index to plot different variables (0 to 6)
-    output_name = output_vars[output_index]
+    # 7. Inverse Scaling and Plotting for all output variables on the first test run
     test_df = runs['test'][0]
     t_np = test_df['t'].values
-    true_vals = test_df[output_vars].values[:, output_index]
-    pred_vals = predictions['test'][0].numpy()[:, output_index] * y_std[output_index] + y_mean[output_index]
+    pred_test_scaled = predictions['test'][0].numpy()
 
-    plt.figure(figsize=(9, 5))
-    plt.plot(t_np, true_vals, label=f"Simulation {output_name}", color="blue", linewidth=2, linestyle="--")
-    plt.plot(t_np, pred_vals, label=f"Neural ODE {output_name}", color="red", linewidth=2)
+    # Create a 4x2 grid, sharing the x-axis to eliminate duplicate tick labels
+    fig, axes = plt.subplots(4, 2, figsize=(14, 18), sharex=True)
+    axes = axes.flatten()
 
-    plt.xlabel("Time ($t$)", fontsize=12)
-    plt.ylabel(f"Value ({output_name})", fontsize=12)
-    plt.title(f"Neural ODE on an unseen run: {output_name}", fontsize=14)
-    plt.legend(fontsize=11)
-    plt.grid(True, linestyle=":", alpha=0.7)
+    for i, output_name in enumerate(output_vars):
+        ax = axes[i]
+        true_vals = test_df[output_vars].values[:, i]
+        pred_vals = pred_test_scaled[:, i] * y_std[i] + y_mean[i]
+
+        ax.plot(t_np, true_vals, label="Simulation", color="blue", linewidth=2, linestyle="--")
+        ax.plot(t_np, pred_vals, label="Neural ODE", color="red", linewidth=2)
+
+        # Only label the x-axis on the bottom row to keep it clean
+        if i >= len(output_vars) - 2:
+            ax.set_xlabel("Time ($t$)", fontsize=11)
+            
+        ax.set_ylabel("Value", fontsize=11)
+        ax.set_title(f"Test Run: {output_name}", fontsize=12, pad=10)
+        ax.legend(fontsize=9)
+        ax.grid(True, linestyle=":", alpha=0.7)
+
+    # Hide the 8th empty subplot slot since there are only 7 output variables
+    if len(output_vars) < len(axes):
+        axes[-1].axis('off')
+
+    # Give rows plenty of breathing room (hspace=0.55)
+    plt.subplots_adjust(hspace=0.55, wspace=0.25, top=0.94, bottom=0.06)
     plt.show()
 
     # 8. Save trained model weights, feature scaling parameters, and metadata
