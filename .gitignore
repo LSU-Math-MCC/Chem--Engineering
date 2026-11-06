@@ -7,3 +7,7 @@ __pycache__/derivatives.cpython-314.pyc
 /__pycache/*
 /__pycache__
 neural_ode_reactor_model.pth
+/__pycache__
+neural_ode_reactor_model.pth
+results.csv
+results_config.json
