@@ -24,7 +24,9 @@ The runs follow EPDM_Data_Generation: 1,450-step DOE step tests for the four gra
 covers all grades: the grade is an extra one-hot input, since the same feeds give very different polymer in each
 grade. Mw, Mn, ML and PR are log-scaled because they span orders of magnitude across grades. Training uses random
 WINDOW-step windows cut from the long runs; an encoder turns the ENC_STEPS steps before a window into its starting
-hidden state. A whole run is predicted the same way, starting after its first ENC_STEPS steps. The four original
+hidden state. Trained on short windows only, a forecast over a whole 1,450-step run drifts (grade 1 Mooney was off
+by 116% by the last third), so training then continues on longer windows and whole runs (LONG_STAGES).
+A whole run is predicted the same way, starting after its first ENC_STEPS steps. The four original
 EPDM_Data_Generation datasets are the final benchmark and are never trained on.
 """
 import re
@@ -62,6 +64,11 @@ SEED = 0
 N_TRIALS = 10
 TRIAL_EPOCHS = 100  # long enough to tell which settings keep learning
 FINAL_EPOCHS = 2000
+# After the WINDOW-step training, continue on longer windows so the model stays on track over a whole run
+# instead of drifting: (window steps or "full" for whole runs, windows per batch, epochs). Each stage
+# starts at STAGE_LR_FACTOR times the best learning rate. Empty list = short windows only.
+LONG_STAGES = [(500, 32, 300), ("full", 16, 300)]
+STAGE_LR_FACTOR = 0.3
 PLOT_GRADE = 1      # which reference dataset to plot at the end
 
 
@@ -119,20 +126,25 @@ def tau_grid(df, steps):
     return torch.arange(steps + 1, dtype=torch.float32) * (dt / T_SCALE)
 
 
-def make_windows(arrays, picks):
+def make_windows(arrays, picks, window=WINDOW):
     """Batch for (run, start) picks: encoder history [B, ENC_STEPS + 1, in + out], inputs and targets
-    over the window [B, WINDOW + 1, ...]."""
+    over the window [B, window + 1, ...]."""
     hist, xs, ys = [], [], []
     for i, s in picks:
         x, y = arrays[i]
         hist.append(torch.cat([x[s - ENC_STEPS:s + 1], y[s - ENC_STEPS:s + 1]], dim=-1))
-        xs.append(x[s:s + WINDOW + 1])
-        ys.append(y[s:s + WINDOW + 1])
+        xs.append(x[s:s + window + 1])
+        ys.append(y[s:s + window + 1])
     return torch.stack(hist), torch.stack(xs), torch.stack(ys)
 
 
-def random_picks(arrays, count, rng):
-    return [(i, int(rng.integers(ENC_STEPS, len(arrays[i][0]) - WINDOW))) for i in rng.integers(0, len(arrays), count)]
+def longest_window(arrays):
+    """Steps in a whole run after the encoder's history (the shortest run decides)."""
+    return min(len(x) for x, _ in arrays) - 1 - ENC_STEPS
+
+
+def random_picks(arrays, count, rng, window=WINDOW):
+    return [(i, int(rng.integers(ENC_STEPS, len(arrays[i][0]) - window))) for i in rng.integers(0, len(arrays), count)]
 
 
 # 2. Define the Neural Network ODE Function
@@ -213,17 +225,20 @@ def r2_per_output(pred, true):
     return 1 - ((pred - true) ** 2).sum(axis=0) / ((true - true.mean(axis=0)) ** 2).sum(axis=0)
 
 
-def train_model(train_arrays, val_batch, tau, lr, weight_decay, latent_dim, epochs, report):
-    """Train one model on random windows. report(epoch, train_loss, val_loss) is called every 10 epochs."""
+def train_model(train_arrays, val_batch, tau, lr, weight_decay, latent_dim, epochs, report,
+                window=WINDOW, batch=BATCH, func=None):
+    """Train on random `window`-step windows (tau must cover `window` steps), a new model or, with func,
+    continue training that one. report(epoch, train_loss, val_loss) is called every 10 epochs."""
     torch.manual_seed(SEED)
     rng = np.random.default_rng(SEED)
-    func = ODEFunc(latent_dim=latent_dim)
+    func = func or ODEFunc(latent_dim=latent_dim)
+    func.train()
     optimizer = optim.Adam(func.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
     criterion = nn.MSELoss()
 
     for epoch in range(1, epochs + 1):
-        history, x, y = make_windows(train_arrays, random_picks(train_arrays, BATCH, rng))
+        history, x, y = make_windows(train_arrays, random_picks(train_arrays, batch, rng, window), window)
         optimizer.zero_grad()
         pred_y, _ = func.predict(tau, x, history)
         loss = criterion(pred_y, y)
@@ -237,6 +252,29 @@ def train_model(train_arrays, val_batch, tau, lr, weight_decay, latent_dim, epoc
                 val_loss = criterion(func.predict(tau, val_batch[1], val_batch[0])[0], val_batch[2]).item()
             report(epoch, loss.item(), val_loss)
     return func, val_loss
+
+
+def train_long_stages(func, arrays, df, params):
+    """Continue training `func` through LONG_STAGES. Validation uses windows of the stage's length
+    (whole validation runs for "full"), so each stage is judged on the horizon it trains for."""
+    full = min(longest_window(arrays['train']), longest_window(arrays['val']))
+    for window, batch, epochs in LONG_STAGES:
+        window = full if window == "full" else min(window, full)
+        if window == full:
+            val_picks = [(i, ENC_STEPS) for i in range(len(arrays['val']))]
+        else:
+            val_picks = random_picks(arrays['val'], VAL_WINDOWS, np.random.default_rng(SEED + 1), window)
+        val_batch = make_windows(arrays['val'], val_picks, window)
+        print(f"\nContinuing on {window}-step windows ({batch} per batch, {epochs} epochs)...", flush=True)
+
+        def report(epoch, train_loss, val_loss):
+            if epoch % 50 == 0:
+                print(f"Epoch {epoch:04d} | Train loss: {train_loss:.6f} | Validation loss: {val_loss:.6f}", flush=True)
+
+        func, _ = train_model(arrays['train'], val_batch, tau_grid(df, window), params['lr'] * STAGE_LR_FACTOR,
+                              params['weight_decay'], params['latent_dim'], epochs, report,
+                              window=window, batch=batch, func=func)
+    return func
 
 
 def main():
@@ -297,6 +335,7 @@ def main():
 
     func, _ = train_model(arrays['train'], val_batch, tau, best_params['lr'], best_params['weight_decay'],
                           best_params['latent_dim'], FINAL_EPOCHS, report)
+    func = train_long_stages(func, arrays, runs['train'][0][0], best_params)
     func.eval()
     print("\nFinal Training Complete!")
 
