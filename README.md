@@ -56,7 +56,8 @@ starts. Press **Reset to defaults** on the page to go back to `DEFAULT_CONFIG`.
 | `results_config.json` | The inputs that produced `results.csv`. |
 | `EQUATIONS.md` | Every equation the simulator solves, and the default parameters. |
 | `cozewith88_model_36state.py` | An earlier standalone version of the model. The simulator does not use it. |
-| `generate_training_data.py`, `neural_ode_code_taking_csv.py`, `prediction_model.py`, `nn_and_node_research.py` | Research scripts: simulator runs with random input changes written to `data/`, a neural ODE trained on them (inputs `T_i` and `flow_*`, outputs the `*_meas` columns) and saved to `neural_ode_reactor_model.pth`, and a script that predicts a new run with it. Run them in that order. Not used by the simulator; they need `torch`, `torchdiffeq`, `optuna`, `pandas` and `matplotlib`. |
+| `EPDM_Data_Generation/` | Four reference datasets (grades 1–4: four parameter sets) from this simulator, their configs, and the shared DOE step-test plan. See its README. |
+| `generate_training_data.py`, `neural_ode_code_taking_csv.py`, `prediction_model.py`, `nn_and_node_research.py` | Research scripts: simulator runs in the style of `EPDM_Data_Generation` (the DOE steps in random orders, for each grade) written to `data/`, one neural ODE trained on them for all grades (inputs `T_i`, `flow_*` and the grade; outputs the `*_meas` columns) and saved to `neural_ode_reactor_model.pth`, and a script that predicts a whole run with it (`python prediction_model.py <run.csv> [grade]`). Run them in that order; the four reference datasets are the test. Not used by the simulator; they need `torch`, `torchdiffeq`, `optuna`, `pandas` and `matplotlib`. |
 
 `.csv` and `.json` files are git-ignored, so plan files and results stay local.
 The plan examples below can be copied into a file.

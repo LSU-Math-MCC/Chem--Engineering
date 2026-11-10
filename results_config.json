@@ -81,6 +81,16 @@
     "C_H2": 0.0,
     "C_Al": 0.0
   },
+  "controllers": [
+    {
+      "name": "example_pi_temperature",
+      "params": {}
+    },
+    {
+      "name": "hold_plan",
+      "params": {}
+    }
+  ],
   "measure": {
     "case": 2,
     "noise": true,
@@ -110,6 +120,5 @@
       "mode": "multiply",
       "value": 1.5
     }
-  ],
-  "controllers": []
+  ]
 }
