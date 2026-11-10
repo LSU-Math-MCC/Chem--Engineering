@@ -37,16 +37,29 @@ t_np, pred_y, true_y = forecast(model, load_run(csv_path), grade, scales)
 r2 = r2_per_output(pred_y, true_y)
 print(f"R2 on {csv_path} (grade {grade}): mean {r2.mean():.3f} | " + ", ".join(f"{name} {v:.3f}" for name, v in zip(output_vars, r2)))
 
-# Plotting
-output_index = 2  # e.g., ML_meas
-output_name = output_vars[output_index]
+# Plot all output variables (already in real units)
+# Create a 4x2 grid, sharing the x-axis to eliminate duplicate tick labels
+fig, axes = plt.subplots(4, 2, figsize=(14, 18), sharex=True)
+axes = axes.flatten()
 
-plt.figure(figsize=(9, 5))
-plt.plot(t_np, true_y[:, output_index], label=f"True {output_name}", color="blue", linestyle="--")
-plt.plot(t_np, pred_y[:, output_index], label=f"Neural ODE Predicted {output_name}", color="red")
-plt.xlabel("Time ($t$)")
-plt.ylabel(output_name)
-plt.title(f"Neural ODE Generalization Test: {output_name} (grade {grade})")
-plt.legend()
-plt.grid(True, linestyle=":", alpha=0.7)
+for i, output_name in enumerate(output_vars):
+    ax = axes[i]
+    ax.plot(t_np, true_y[:, i], label="Simulation", color="blue", linewidth=2, linestyle="--")
+    ax.plot(t_np, pred_y[:, i], label="Neural ODE", color="red", linewidth=2)
+
+    # Only label the x-axis on the bottom row to keep it clean
+    if i >= len(output_vars) - 2:
+        ax.set_xlabel("Time ($t$)", fontsize=11)
+
+    ax.set_ylabel("Value", fontsize=11)
+    ax.set_title(f"Grade {grade}: {output_name} (R² {r2[i]:.3f})", fontsize=12, pad=10)
+    ax.legend(fontsize=9)
+    ax.grid(True, linestyle=":", alpha=0.7)
+
+# Hide the 8th empty subplot slot since there are only 7 output variables
+if len(output_vars) < len(axes):
+    axes[-1].axis('off')
+
+# Give rows plenty of breathing room (hspace=0.55)
+plt.subplots_adjust(hspace=0.55, wspace=0.25, top=0.94, bottom=0.06)
 plt.show()
