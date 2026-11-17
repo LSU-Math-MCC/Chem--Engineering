@@ -30,7 +30,9 @@ A whole run is predicted the same way, starting after its first ENC_STEPS steps.
 EPDM_Data_Generation datasets are the final benchmark and are never trained on.
 """
 import re
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -72,6 +74,25 @@ STAGE_LR_FACTOR = 0.3
 PLOT_GRADE = 1      # which reference dataset to plot at the end
 
 
+@dataclass(frozen=True)
+class Target:
+    """What a model predicts: its output columns, which of them are log-scaled, where it is saved, and an
+    optional prepare(df) that adds derived columns to a loaded run. neural_ode_inout.py defines another."""
+    name: str
+    outputs: tuple
+    log_outputs: tuple
+    model_path: Path
+    prepare: Optional[Callable] = None
+
+    @property
+    def log_idx(self):
+        return [self.outputs.index(name) for name in self.log_outputs]
+
+
+# The polymer-property model this script trains.
+PROPERTIES = Target('properties', tuple(output_vars), tuple(LOG_OUTPUTS), MODEL_PATH)
+
+
 def grade_of(path):
     """Grade number from a file name: data/train_g3_000.csv or results_grade3.csv."""
     m = re.search(r'(?:_g|grade)(\d+)', Path(path).stem)
@@ -80,14 +101,17 @@ def grade_of(path):
     return int(m.group(1))
 
 
-def load_run(path):
-    """One simulator CSV as a DataFrame sorted by time, rows with all measurements only."""
+def load_run(path, target=PROPERTIES):
+    """One simulator CSV as a DataFrame sorted by time, rows with all of the target's outputs only."""
     raw = pd.read_csv(path)
-    blank = [name for name in output_vars if name not in raw or raw[name].isna().all()]
+    if target.prepare:
+        raw = target.prepare(raw)
+    outputs = list(target.outputs)
+    blank = [name for name in outputs if name not in raw or raw[name].isna().all()]
     if blank:
         raise ValueError(f"{path}: no data in {', '.join(blank)}. Measurement case 1 leaves Mw and Mn blank; "
                          "use runs with measure case 2.")
-    return raw.dropna(subset=output_vars).sort_values('t').reset_index(drop=True)
+    return raw.dropna(subset=outputs).sort_values('t').reset_index(drop=True)
 
 
 def scale_inputs(raw):
@@ -97,26 +121,28 @@ def scale_inputs(raw):
     return mean, np.where(std == 0.0, np.maximum(np.abs(mean), 1.0), std)
 
 
-def transform_outputs(y):
+def transform_outputs(y, target=PROPERTIES):
     """Log-scale the outputs that span orders of magnitude (noise can make a reading slightly negative)."""
     y = np.array(y, dtype=float)
-    y[:, LOG_IDX] = np.log1p(np.maximum(y[:, LOG_IDX], 0.0))
+    idx = target.log_idx
+    y[:, idx] = np.log1p(np.maximum(y[:, idx], 0.0))
     return y
 
 
-def untransform_outputs(y):
+def untransform_outputs(y, target=PROPERTIES):
     y = np.array(y, dtype=float)
-    y[:, LOG_IDX] = np.expm1(y[:, LOG_IDX])
+    idx = target.log_idx
+    y[:, idx] = np.expm1(y[:, idx])
     return y
 
 
-def run_arrays(df, grade, scales):
+def run_arrays(df, grade, scales, target=PROPERTIES):
     """Scaled inputs plus the grade one-hot [time, inputs + grades], and scaled outputs [time, outputs]."""
     x_mean, x_std, y_mean, y_std = scales
     onehot = np.zeros((len(df), len(GRADES)))
     onehot[:, GRADES.index(grade)] = 1.0
     x = np.hstack([(df[input_vars].values - x_mean) / x_std, onehot])
-    y = (transform_outputs(df[output_vars].values) - y_mean) / y_std
+    y = (transform_outputs(df[list(target.outputs)].values, target) - y_mean) / y_std
     return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
 
@@ -207,16 +233,16 @@ class ODEFunc(nn.Module):
         return self.readout(h).transpose(0, 1), h
 
 
-def forecast(func, df, grade, scales):
+def forecast(func, df, grade, scales, target=PROPERTIES):
     """Predict a whole run from its first ENC_STEPS steps. Returns (t, predicted, measured) in real units."""
-    x, y = run_arrays(df, grade, scales)
+    x, y = run_arrays(df, grade, scales, target)
     steps = len(df) - 1 - ENC_STEPS
     history = torch.cat([x[:ENC_STEPS + 1], y[:ENC_STEPS + 1]], dim=-1).unsqueeze(0)
     with torch.no_grad():
         pred, _ = func.predict(tau_grid(df, steps), x[ENC_STEPS:].unsqueeze(0), history)
     _, _, y_mean, y_std = scales
-    pred = untransform_outputs(pred[0].numpy() * y_std + y_mean)
-    return df['t'].values[ENC_STEPS:], pred, df[output_vars].values[ENC_STEPS:]
+    pred = untransform_outputs(pred[0].numpy() * y_std + y_mean, target)
+    return df['t'].values[ENC_STEPS:], pred, df[list(target.outputs)].values[ENC_STEPS:]
 
 
 def r2_per_output(pred, true):
@@ -226,12 +252,12 @@ def r2_per_output(pred, true):
 
 
 def train_model(train_arrays, val_batch, tau, lr, weight_decay, latent_dim, epochs, report,
-                window=WINDOW, batch=BATCH, func=None):
+                window=WINDOW, batch=BATCH, func=None, target=PROPERTIES):
     """Train on random `window`-step windows (tau must cover `window` steps), a new model or, with func,
     continue training that one. report(epoch, train_loss, val_loss) is called every 10 epochs."""
     torch.manual_seed(SEED)
     rng = np.random.default_rng(SEED)
-    func = func or ODEFunc(latent_dim=latent_dim)
+    func = func or ODEFunc(latent_dim=latent_dim, output_dim=len(target.outputs))
     func.train()
     optimizer = optim.Adam(func.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
@@ -254,7 +280,7 @@ def train_model(train_arrays, val_batch, tau, lr, weight_decay, latent_dim, epoc
     return func, val_loss
 
 
-def train_long_stages(func, arrays, df, params):
+def train_long_stages(func, arrays, df, params, target=PROPERTIES):
     """Continue training `func` through LONG_STAGES. Validation uses windows of the stage's length
     (whole validation runs for "full"), so each stage is judged on the horizon it trains for."""
     full = min(longest_window(arrays['train']), longest_window(arrays['val']))
@@ -273,27 +299,29 @@ def train_long_stages(func, arrays, df, params):
 
         func, _ = train_model(arrays['train'], val_batch, tau_grid(df, window), params['lr'] * STAGE_LR_FACTOR,
                               params['weight_decay'], params['latent_dim'], epochs, report,
-                              window=window, batch=batch, func=func)
+                              window=window, batch=batch, func=func, target=target)
     return func
 
 
-def main():
+def main(target=PROPERTIES):
+    output_vars = list(target.outputs)
     runs = {}
     for split in ('train', 'val', 'test'):
         files = sorted(DATA_DIR.glob(f'{split}_g*.csv'))
         if not files:
             raise SystemExit(f"No {split} runs in {DATA_DIR}. Run: python generate_training_data.py")
-        runs[split] = [(load_run(file), grade_of(file), file.name) for file in files]
-    runs['reference'] = [(load_run(file), grade_of(file), file.name) for file in sorted(REFERENCE_DIR.glob('results_grade*.csv'))]
+        runs[split] = [(load_run(file, target), grade_of(file), file.name) for file in files]
+    runs['reference'] = [(load_run(file, target), grade_of(file), file.name)
+                         for file in sorted(REFERENCE_DIR.glob('results_grade*.csv'))]
     print("Runs: " + ", ".join(f"{len(v)} {k}" for k, v in runs.items()))
 
     # 3. Feature Scaling for both Inputs and Outputs, from the training runs only
     x_mean, x_std = scale_inputs(np.concatenate([df[input_vars].values for df, _, _ in runs['train']]))
-    y_raw = np.concatenate([transform_outputs(df[output_vars].values) for df, _, _ in runs['train']])
+    y_raw = np.concatenate([transform_outputs(df[output_vars].values, target) for df, _, _ in runs['train']])
     y_mean, y_std = y_raw.mean(axis=0), y_raw.std(axis=0)
     y_std[y_std == 0.0] = 1.0
     scales = (x_mean, x_std, y_mean, y_std)
-    arrays = {split: [run_arrays(df, g, scales) for df, g, _ in v] for split, v in runs.items()}
+    arrays = {split: [run_arrays(df, g, scales, target) for df, g, _ in v] for split, v in runs.items()}
     tau = tau_grid(runs['train'][0][0], WINDOW)
     val_batch = make_windows(arrays['val'], random_picks(arrays['val'], VAL_WINDOWS, np.random.default_rng(SEED + 1)))
 
@@ -312,7 +340,8 @@ def main():
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
 
-        _, val_loss = train_model(arrays['train'], val_batch, tau, lr, weight_decay, latent_dim, TRIAL_EPOCHS, report)
+        _, val_loss = train_model(arrays['train'], val_batch, tau, lr, weight_decay, latent_dim, TRIAL_EPOCHS, report,
+                                  target=target)
         print(f"  Trial {trial.number}: validation loss {val_loss:.4f}", flush=True)
         return val_loss
 
@@ -334,8 +363,8 @@ def main():
             print(f"Epoch {epoch:04d} | Train loss: {train_loss:.6f} | Validation loss: {val_loss:.6f}", flush=True)
 
     func, _ = train_model(arrays['train'], val_batch, tau, best_params['lr'], best_params['weight_decay'],
-                          best_params['latent_dim'], FINAL_EPOCHS, report)
-    func = train_long_stages(func, arrays, runs['train'][0][0], best_params)
+                          best_params['latent_dim'], FINAL_EPOCHS, report, target=target)
+    func = train_long_stages(func, arrays, runs['train'][0][0], best_params, target)
     func.eval()
     print("\nFinal Training Complete!")
 
@@ -343,13 +372,13 @@ def main():
     for split in ('test', 'reference'):
         print(f"\nR2 on whole {split} runs (predicted from step {ENC_STEPS} to the end):")
         for df, grade, name in runs[split]:
-            _, pred, true = forecast(func, df, grade, scales)
+            _, pred, true = forecast(func, df, grade, scales, target)
             r2 = r2_per_output(pred, true)
             print(f"  grade {grade} {name}: mean {r2.mean():.3f} | " + ", ".join(f"{n} {v:.3f}" for n, v in zip(output_vars, r2)))
 
     # 7. Plot all output variables for one reference dataset
     df, grade, name = next(r for r in runs['reference'] if r[1] == PLOT_GRADE)
-    t_np, pred, true = forecast(func, df, grade, scales)
+    t_np, pred, true = forecast(func, df, grade, scales, target)
 
     # Create a 4x2 grid, sharing the x-axis to eliminate duplicate tick labels
     fig, axes = plt.subplots(4, 2, figsize=(14, 18), sharex=True)
@@ -387,15 +416,16 @@ def main():
         't_scale': T_SCALE,
         'enc_steps': ENC_STEPS,
         'grades': GRADES,
-        'log_outputs': LOG_OUTPUTS,
+        'log_outputs': list(target.log_outputs),
         'input_vars': input_vars,
         'output_vars': output_vars,
+        'target': target.name,
         'latent_dim': best_params['latent_dim'],
         'best_hyperparameters': best_params
     }
 
-    torch.save(checkpoint, MODEL_PATH)
-    print(f"Optimized model successfully exported to '{MODEL_PATH.name}'!")
+    torch.save(checkpoint, target.model_path)
+    print(f"Optimized model successfully exported to '{target.model_path.name}'!")
 
 
 if __name__ == "__main__":
