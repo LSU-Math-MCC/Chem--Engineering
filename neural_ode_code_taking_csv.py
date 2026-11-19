@@ -76,17 +76,22 @@ PLOT_GRADE = 1      # which reference dataset to plot at the end
 
 @dataclass(frozen=True)
 class Target:
-    """What a model predicts: its output columns, which of them are log-scaled, where it is saved, and an
-    optional prepare(df) that adds derived columns to a loaded run. neural_ode_inout.py defines another."""
+    """A model's input and output columns, which outputs are log-scaled, where it is saved, and an optional
+    prepare(df, path) that adds derived columns to a loaded run. neural_ode_inout.py defines another."""
     name: str
     outputs: tuple
     log_outputs: tuple
     model_path: Path
     prepare: Optional[Callable] = None
+    inputs: tuple = tuple(input_vars)
 
     @property
     def log_idx(self):
         return [self.outputs.index(name) for name in self.log_outputs]
+
+    @property
+    def input_dim(self):
+        return len(self.inputs) + len(GRADES)
 
 
 # The polymer-property model this script trains.
@@ -105,7 +110,7 @@ def load_run(path, target=PROPERTIES):
     """One simulator CSV as a DataFrame sorted by time, rows with all of the target's outputs only."""
     raw = pd.read_csv(path)
     if target.prepare:
-        raw = target.prepare(raw)
+        raw = target.prepare(raw, path)
     outputs = list(target.outputs)
     blank = [name for name in outputs if name not in raw or raw[name].isna().all()]
     if blank:
@@ -141,7 +146,7 @@ def run_arrays(df, grade, scales, target=PROPERTIES):
     x_mean, x_std, y_mean, y_std = scales
     onehot = np.zeros((len(df), len(GRADES)))
     onehot[:, GRADES.index(grade)] = 1.0
-    x = np.hstack([(df[input_vars].values - x_mean) / x_std, onehot])
+    x = np.hstack([(df[list(target.inputs)].values - x_mean) / x_std, onehot])
     y = (transform_outputs(df[list(target.outputs)].values, target) - y_mean) / y_std
     return torch.tensor(x, dtype=torch.float32), torch.tensor(y, dtype=torch.float32)
 
@@ -257,7 +262,7 @@ def train_model(train_arrays, val_batch, tau, lr, weight_decay, latent_dim, epoc
     continue training that one. report(epoch, train_loss, val_loss) is called every 10 epochs."""
     torch.manual_seed(SEED)
     rng = np.random.default_rng(SEED)
-    func = func or ODEFunc(latent_dim=latent_dim, output_dim=len(target.outputs))
+    func = func or ODEFunc(latent_dim=latent_dim, input_dim=target.input_dim, output_dim=len(target.outputs))
     func.train()
     optimizer = optim.Adam(func.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs)
@@ -316,7 +321,7 @@ def main(target=PROPERTIES):
     print("Runs: " + ", ".join(f"{len(v)} {k}" for k, v in runs.items()))
 
     # 3. Feature Scaling for both Inputs and Outputs, from the training runs only
-    x_mean, x_std = scale_inputs(np.concatenate([df[input_vars].values for df, _, _ in runs['train']]))
+    x_mean, x_std = scale_inputs(np.concatenate([df[list(target.inputs)].values for df, _, _ in runs['train']]))
     y_raw = np.concatenate([transform_outputs(df[output_vars].values, target) for df, _, _ in runs['train']])
     y_mean, y_std = y_raw.mean(axis=0), y_raw.std(axis=0)
     y_std[y_std == 0.0] = 1.0
@@ -417,7 +422,7 @@ def main(target=PROPERTIES):
         'enc_steps': ENC_STEPS,
         'grades': GRADES,
         'log_outputs': list(target.log_outputs),
-        'input_vars': input_vars,
+        'input_vars': list(target.inputs),
         'output_vars': output_vars,
         'target': target.name,
         'latent_dim': best_params['latent_dim'],
