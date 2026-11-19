@@ -45,14 +45,14 @@ $$\lambda_L = P_0 + Q_0 + R_0 \qquad \text{(total live chains)}$$
 $$\tau_{Al} = k_{tr}\,g(C_{C1}) \qquad \tau_{M2} = k_{trM2}\,C_{M2}$$
 
 where $g$ is the alkyl ratio. It is $C_{Al}/C_{C1} - 1$, except that below a
-critical catalyst concentration $c^* $ (`CC1_crit`, default 1e-7 mol/L) it is
+critical catalyst concentration $c^{\ast}$ (`CC1_crit`, default 1e-7 mol/L) it is
 replaced by a polynomial that goes to 0 at $C_{C1} = 0$. That way the model
 never divides by zero, and a catalyst feed of 0 can be simulated:
 
-$$g(C_{C1}) = \begin{cases} \dfrac{C_{Al}}{C_{C1}} - 1 & C_{C1} \ge c^{*2} \[2ex] \dfrac{C_{Al} - C_{C1}}{c^{*2}}\left(6C_{C1} - \dfrac{8}{c^*}C_{C1}^2 + \dfrac{3}{c^{*2}}C_{C1}^3\right) & C_{C1} < c^* \end{cases}$$
+$$g(C_{C1}) = \begin{cases} \dfrac{C_{Al}}{C_{C1}} - 1 & C_{C1} \ge c^{\ast} \\[2ex] \dfrac{C_{Al} - C_{C1}}{(c^{\ast})^2}\left(6C_{C1} - \dfrac{8}{c^{\ast}}C_{C1}^2 + \dfrac{3}{(c^{\ast})^2}C_{C1}^3\right) & C_{C1} < c^{\ast} \end{cases}$$
 
-The two branches are equal at $C_{C1} = c^*$. If the solver steps $C_{C1}$ a
-hair below 0 as the catalyst runs out, it is treated as 0. $c^*$ can be set on
+The two branches are equal at $C_{C1} = c^{\ast}$. If the solver steps $C_{C1}$ a
+hair below 0 as the catalyst runs out, it is treated as 0. $c^{\ast}$ can be set on
 the dashboard (*Critical C_C1*) or with `CC1_crit` in a plan CSV.
 
 The total rate at which a live chain dies (termination plus transfer) is
